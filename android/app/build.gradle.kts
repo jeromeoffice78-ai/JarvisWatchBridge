@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.jarvis.watchbridge"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.jarvis.watchbridge"
