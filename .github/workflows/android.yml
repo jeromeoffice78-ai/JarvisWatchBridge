@@ -1,23 +1,189 @@
-name: Android APK
+name: JARVIS Watch Bridge Production Android
+
 on:
   workflow_dispatch:
   push:
-    paths: ["android/**"]
+    branches: [main]
+    paths:
+      - 'native-shell/**'
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  JARVIS_HTTP_BASE: https://jarvis-watch-bridge.floot.app
+  JARVIS_SIGNING_CERT_SHA256: 004905e15f747bc9a635366138c01357b1c06615dfe6f3c3af9d3b1d52c1187f
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: native-shell/package.json
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.11.1'
-      - run: gradle :app:assembleDebug
-        working-directory: android
+          java-version: '21'
+
+      - name: Install native dependencies
+        working-directory: native-shell
+        run: npm install --no-audit --no-fund
+
+      - name: Prepare Capacitor Android project
+        working-directory: native-shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf android
+          npx cap add android
+
+          python - <<'PY'
+          from pathlib import Path
+
+          # Android 14+ microphone foreground-service requirements.
+          plugin_root = Path('node_modules/@capawesome-team/capacitor-android-foreground-service')
+          for manifest in plugin_root.rglob('AndroidManifest.xml'):
+              text = manifest.read_text()
+              if 'AndroidForegroundService' not in text:
+                  continue
+              if 'android.permission.FOREGROUND_SERVICE_MICROPHONE' not in text:
+                  text = text.replace(
+                      '<manifest xmlns:android="http://schemas.android.com/apk/res/android">',
+                      '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />',
+                      1,
+                  )
+              if 'android:foregroundServiceType="microphone"' not in text:
+                  text = text.replace(
+                      '<service android:name="io.capawesome.capacitorjs.plugins.foregroundservice.AndroidForegroundService"',
+                      '<service android:name="io.capawesome.capacitorjs.plugins.foregroundservice.AndroidForegroundService" android:foregroundServiceType="microphone"',
+                      1,
+                  )
+              manifest.write_text(text)
+
+          app_manifest = Path('android/app/src/main/AndroidManifest.xml')
+          text = app_manifest.read_text()
+          permissions = [
+              '<uses-permission android:name="android.permission.RECORD_AUDIO" />',
+              '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
+              '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
+              '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />',
+              '<uses-permission android:name="android.permission.WAKE_LOCK" />',
+              '<uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />',
+              '<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />',
+              '<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />',
+              '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />',
+              '<uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />',
+          ]
+          marker = '<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
+          for entry in reversed(permissions):
+              if entry.split(' android:')[0] not in text and entry not in text:
+                  text = text.replace(marker, marker + '\n    ' + entry, 1)
+          app_manifest.write_text(text)
+
+          gradle = Path('android/app/build.gradle')
+          g = gradle.read_text()
+          g = g.replace('versionCode 1', 'versionCode 20')
+          g = g.replace('versionName "1.0"', 'versionName "2.0.0"')
+          gradle.write_text(g)
+          PY
+
+          npx cap sync android
+          chmod +x android/gradlew
+
+      - name: Retrieve permanent JARVIS signing identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/jarvis_signing
+          OIDC_JSON="$(curl -fsSL \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=jarvis-legal-android-signing")"
+          OIDC_TOKEN="$(OIDC_JSON="$OIDC_JSON" python - <<'PY'
+          import json, os
+          token = json.loads(os.environ['OIDC_JSON']).get('value', '')
+          if not token:
+              raise SystemExit('GitHub OIDC token was not returned.')
+          print(token)
+          PY
+          )"
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer ${OIDC_TOKEN}" \
+            "${JARVIS_HTTP_BASE}/_api/v1/internal/android-signing" \
+            -o /tmp/jarvis_signing/identity.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('/tmp/jarvis_signing/identity.json').read_text())
+          private_key = payload.get('privateKeyPem', '')
+          certificate = payload.get('certificatePem', '')
+          fingerprint = payload.get('certificateSha256', '').lower()
+          expected = '004905e15f747bc9a635366138c01357b1c06615dfe6f3c3af9d3b1d52c1187f'
+          if not private_key.startswith('-----BEGIN') or 'PRIVATE KEY-----' not in private_key:
+              raise SystemExit('Signing service returned an invalid private key.')
+          if not certificate.startswith('-----BEGIN CERTIFICATE-----'):
+              raise SystemExit('Signing service returned an invalid certificate.')
+          if fingerprint != expected:
+              raise SystemExit('Signing certificate fingerprint mismatch.')
+          Path('/tmp/jarvis_signing/private-key.pem').write_text(private_key)
+          Path('/tmp/jarvis_signing/certificate.pem').write_text(certificate)
+          PY
+          chmod 600 /tmp/jarvis_signing/private-key.pem
+          openssl pkcs8 -topk8 -inform PEM -outform DER -nocrypt \
+            -in /tmp/jarvis_signing/private-key.pem \
+            -out /tmp/jarvis_signing/private-key.pk8
+          ACTUAL_CERT_SHA="$(openssl x509 -in /tmp/jarvis_signing/certificate.pem -outform DER | sha256sum | awk '{print $1}')"
+          test "$ACTUAL_CERT_SHA" = "$JARVIS_SIGNING_CERT_SHA256"
+
+      - name: Build unsigned release APK
+        working-directory: native-shell/android
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Sign and verify production APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          ZIPALIGN="$(find "${ANDROID_HOME}/build-tools" -type f -name zipalign | sort -V | tail -1)"
+          AAPT="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          test -x "$ZIPALIGN"
+          test -x "$AAPT"
+
+          UNSIGNED="$(find native-shell/android/app/build/outputs/apk/release -type f -name '*.apk' | head -1)"
+          test -f "$UNSIGNED"
+          mkdir -p dist
+          "$ZIPALIGN" -f -p 4 "$UNSIGNED" /tmp/JARVIS-Watch-Bridge-aligned.apk
+          "$APKSIGNER" sign \
+            --key /tmp/jarvis_signing/private-key.pk8 \
+            --cert /tmp/jarvis_signing/certificate.pem \
+            --out dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk \
+            /tmp/JARVIS-Watch-Bridge-aligned.apk
+
+          "$APKSIGNER" verify --verbose --print-certs dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk
+          "$AAPT" dump badging dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk | grep -q "package: name='com.jarvis.watchbridge'"
+          "$AAPT" dump permissions dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk | grep -q 'android.permission.RECORD_AUDIO'
+          "$AAPT" dump permissions dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk | grep -q 'android.permission.BLUETOOTH_SCAN'
+          "$AAPT" dump permissions dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk | grep -q 'android.permission.BLUETOOTH_CONNECT'
+          "$AAPT" dump permissions dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk | grep -q 'android.permission.FOREGROUND_SERVICE_MICROPHONE'
+
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+          printf '%s  JARVIS permanent Android signing certificate\n' "$JARVIS_SIGNING_CERT_SHA256" > dist/SIGNING-CERT-SHA256.txt
+          rm -rf /tmp/jarvis_signing /tmp/JARVIS-Watch-Bridge-aligned.apk
+
       - uses: actions/upload-artifact@v4
         with:
-          name: JarvisWatchBridge-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: JARVIS-Watch-Bridge-v2.0.0-PRODUCTION-Android
+          path: |
+            dist/*.apk
+            dist/SHA256SUMS.txt
+            dist/SIGNING-CERT-SHA256.txt
+          retention-days: 30
