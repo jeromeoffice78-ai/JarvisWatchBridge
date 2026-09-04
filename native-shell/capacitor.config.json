@@ -1,0 +1,9 @@
+{
+  "appId": "com.jarvis.watchbridge",
+  "appName": "JARVIS Watch Bridge",
+  "webDir": "www",
+  "server": {
+    "url": "https://jarvis-watch-bridge.floot.app",
+    "cleartext": false
+  }
+}
