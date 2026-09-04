@@ -55,10 +55,11 @@ jobs:
               text = manifest.read_text()
               if 'AndroidForegroundService' not in text:
                   continue
-              if 'android.permission.FOREGROUND_SERVICE_MICROPHONE' not in text:
+              root = '<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
+              if 'android.permission.FOREGROUND_SERVICE_MICROPHONE' not in text and root in text:
                   text = text.replace(
-                      '<manifest xmlns:android="http://schemas.android.com/apk/res/android">',
-                      '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />',
+                      root,
+                      root + '\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />',
                       1,
                   )
               if 'android:foregroundServiceType="microphone"' not in text:
@@ -71,22 +72,27 @@ jobs:
 
           app_manifest = Path('android/app/src/main/AndroidManifest.xml')
           text = app_manifest.read_text()
-          permissions = [
-              '<uses-permission android:name="android.permission.RECORD_AUDIO" />',
-              '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
-              '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
-              '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />',
-              '<uses-permission android:name="android.permission.WAKE_LOCK" />',
-              '<uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />',
-              '<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />',
-              '<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />',
-              '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />',
-              '<uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />',
+          root = '<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
+          required = [
+              ('android.permission.RECORD_AUDIO', '<uses-permission android:name="android.permission.RECORD_AUDIO" />'),
+              ('android.permission.POST_NOTIFICATIONS', '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />'),
+              ('android.permission.FOREGROUND_SERVICE', '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />'),
+              ('android.permission.FOREGROUND_SERVICE_MICROPHONE', '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />'),
+              ('android.permission.WAKE_LOCK', '<uses-permission android:name="android.permission.WAKE_LOCK" />'),
+              ('android.permission.BLUETOOTH_SCAN', '<uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />'),
+              ('android.permission.BLUETOOTH_CONNECT', '<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />'),
+              ('android.permission.ACCESS_COARSE_LOCATION', '<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />'),
+              ('android.permission.ACCESS_FINE_LOCATION', '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />'),
           ]
-          marker = '<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
-          for entry in reversed(permissions):
-              if entry.split(' android:')[0] not in text and entry not in text:
-                  text = text.replace(marker, marker + '\n    ' + entry, 1)
+          for permission_name, entry in required:
+              if permission_name not in text:
+                  text = text.replace(root, root + '\n    ' + entry, 1)
+          if 'android.hardware.bluetooth_le' not in text:
+              text = text.replace(
+                  root,
+                  root + '\n    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />',
+                  1,
+              )
           app_manifest.write_text(text)
 
           gradle = Path('android/app/build.gradle')
@@ -98,6 +104,9 @@ jobs:
 
           npx cap sync android
           chmod +x android/gradlew
+
+          echo '--- App manifest native requirements ---'
+          grep -E 'RECORD_AUDIO|POST_NOTIFICATIONS|FOREGROUND_SERVICE|WAKE_LOCK|BLUETOOTH|ACCESS_.*LOCATION|hardware.bluetooth_le' android/app/src/main/AndroidManifest.xml || true
 
       - name: Retrieve permanent JARVIS signing identity
         shell: bash
@@ -169,15 +178,27 @@ jobs:
             /tmp/JARVIS-Watch-Bridge-aligned.apk
 
           "$APKSIGNER" verify --verbose --print-certs dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk
-          "$AAPT" dump badging dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk | grep -q "package: name='com.jarvis.watchbridge'"
-          "$AAPT" dump permissions dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk | grep -q 'android.permission.RECORD_AUDIO'
-          "$AAPT" dump permissions dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk | grep -q 'android.permission.BLUETOOTH_SCAN'
-          "$AAPT" dump permissions dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk | grep -q 'android.permission.BLUETOOTH_CONNECT'
-          "$AAPT" dump permissions dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk | grep -q 'android.permission.FOREGROUND_SERVICE_MICROPHONE'
+          "$AAPT" dump badging dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk > /tmp/jarvis-badging.txt
+          "$AAPT" dump permissions dist/JARVIS-Watch-Bridge-v2.0.0-PERMANENT-SIGNED.apk > /tmp/jarvis-permissions.txt
+          echo '--- APK badging ---'
+          head -n 12 /tmp/jarvis-badging.txt
+          echo '--- APK permissions ---'
+          cat /tmp/jarvis-permissions.txt
+
+          grep -Fq "package: name='com.jarvis.watchbridge'" /tmp/jarvis-badging.txt
+          for permission in \
+            android.permission.RECORD_AUDIO \
+            android.permission.BLUETOOTH_SCAN \
+            android.permission.BLUETOOTH_CONNECT \
+            android.permission.FOREGROUND_SERVICE \
+            android.permission.FOREGROUND_SERVICE_MICROPHONE \
+            android.permission.POST_NOTIFICATIONS; do
+              grep -Fq "$permission" /tmp/jarvis-permissions.txt || { echo "Missing required permission: $permission" >&2; exit 1; }
+          done
 
           sha256sum dist/*.apk > dist/SHA256SUMS.txt
           printf '%s  JARVIS permanent Android signing certificate\n' "$JARVIS_SIGNING_CERT_SHA256" > dist/SIGNING-CERT-SHA256.txt
-          rm -rf /tmp/jarvis_signing /tmp/JARVIS-Watch-Bridge-aligned.apk
+          rm -rf /tmp/jarvis_signing /tmp/JARVIS-Watch-Bridge-aligned.apk /tmp/jarvis-badging.txt /tmp/jarvis-permissions.txt
 
       - uses: actions/upload-artifact@v4
         with:
