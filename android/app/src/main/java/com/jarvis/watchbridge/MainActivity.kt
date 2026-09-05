@@ -61,15 +61,23 @@ class MainActivity : ComponentActivity() {
                 var busy by remember { mutableStateOf(false) }
                 var listening by remember { mutableStateOf(false) }
                 var alwaysListening by remember { mutableStateOf(false) }
+                var isSpeaking by remember { mutableStateOf(false) }
                 var alertPulse by remember { mutableStateOf(false) }
                 var routes by remember { mutableStateOf(audioRouter.availableRoutes()) }
                 var selectedRoute by remember { mutableStateOf("Device audio") }
 
+                DisposableEffect(Unit) {
+                    speech.setSpeakingListener { speaking ->
+                        runOnUiThread { isSpeaking = speaking }
+                    }
+                    onDispose { speech.setSpeakingListener { } }
+                }
+
                 val visualState = when {
                     alertPulse -> JarvisVisualState.ALERT
                     busy -> JarvisVisualState.THINKING
+                    isSpeaking -> JarvisVisualState.SPEAKING
                     listening || alwaysListening -> JarvisVisualState.LISTENING
-                    reply.isNotBlank() && reply != "JARVIS online" -> JarvisVisualState.SPEAKING
                     else -> JarvisVisualState.IDLE
                 }
 
@@ -86,13 +94,14 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize()) {
                     LazyColumn(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         item {
-                            Text("JARVIS WATCH BRIDGE", style = MaterialTheme.typography.headlineSmall)
+                            Text("JARVIS", style = MaterialTheme.typography.headlineSmall)
+                            Text("Your AI. Your world. Always with you.", style = MaterialTheme.typography.bodyMedium)
                             JarvisFace(state = visualState)
                             Text(
                                 when (visualState) {
                                     JarvisVisualState.IDLE -> "JARVIS standing by"
                                     JarvisVisualState.LISTENING -> if (alwaysListening) "Always listening for ‘Jarvis’" else "Listening"
-                                    JarvisVisualState.THINKING -> "Processing"
+                                    JarvisVisualState.THINKING -> "Thinking"
                                     JarvisVisualState.SPEAKING -> "Speaking"
                                     JarvisVisualState.ALERT -> "Incoming JARVIS alert"
                                 },
@@ -103,6 +112,7 @@ class MainActivity : ComponentActivity() {
                             state.heartRateBpm?.let { Text("Direct BLE heart rate: $it bpm") }
                             state.error?.let { Text(it) }
                         }
+
                         item {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(onClick = {
@@ -119,6 +129,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
+
                         items(state.devices) { d ->
                             ElevatedCard(onClick = { ble.connect(d.address) }) {
                                 Column(Modifier.padding(12.dp)) {
@@ -127,6 +138,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
+
                         item {
                             HorizontalDivider()
                             Text("Voice & audio", style = MaterialTheme.typography.titleLarge)
@@ -158,6 +170,7 @@ class MainActivity : ComponentActivity() {
                             }
                             Text("Always-listening mode runs as a visible Android microphone foreground service. Android will show a persistent notification while the microphone service is active.", style = MaterialTheme.typography.bodySmall)
                         }
+
                         item {
                             HorizontalDivider()
                             Text("Health", style = MaterialTheme.typography.titleLarge)
@@ -173,6 +186,7 @@ class MainActivity : ComponentActivity() {
                                 }) { Text("Refresh health") }
                             }
                         }
+
                         item {
                             HorizontalDivider()
                             Text("Ask JARVIS", style = MaterialTheme.typography.titleLarge)
@@ -188,20 +202,22 @@ class MainActivity : ComponentActivity() {
                                     busy = true
                                     lifecycleScope.launch {
                                         reply = try { chat.send(msg, healthText) } catch (e: Exception) { "Error: ${e.message}" }
+                                        busy = false
                                         notifications.push("JARVIS", reply)
                                         speech.speak(reply)
-                                        busy = false
                                     }
                                 }) { Text(if (busy) "Thinking…" else "Send") }
                             }
                             Text(reply)
                         }
+
                         item {
                             HorizontalDivider()
                             Text("Phone receptionist", style = MaterialTheme.typography.titleLarge)
-                            Text("JARVIS checks for completed Vapi calls while Watch Bridge is running and posts a phone notification. If LAXASFIT mirrors phone notifications, the alert can appear on the watch too.")
-                            Button(onClick = { alertPulse = true }) { Text("Preview face alert") }
+                            Text("JARVIS checks for completed Vapi calls while the app is running and posts a phone notification. If LAXASFIT mirrors phone notifications, the alert can appear on the watch too.")
+                            Button(onClick = { alertPulse = true }) { Text("Preview JARVIS alert") }
                         }
+
                         item {
                             Text("Portable mode is enabled: BLE is optional, so JARVIS can run on compatible Android phones or tablets even when no watch is present. Watch-only capabilities remain dependent on the hardware and firmware exposed by that watch.", style = MaterialTheme.typography.bodySmall)
                         }
