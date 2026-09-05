@@ -20,7 +20,7 @@ import com.jarvis.watchbridge.ble.BleManager
 import com.jarvis.watchbridge.health.HealthRepository
 import com.jarvis.watchbridge.notifications.NotificationHelper
 import com.jarvis.watchbridge.notifications.PhoneMessageRepository
-import com.jarvis.watchbridge.ui.JarvisCore
+import com.jarvis.watchbridge.ui.JarvisFace
 import com.jarvis.watchbridge.ui.JarvisVisualState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -75,13 +75,13 @@ class MainActivity : ComponentActivity() {
                     LazyColumn(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         item {
                             Text("JARVIS WATCH BRIDGE", style = MaterialTheme.typography.headlineSmall)
-                            JarvisCore(state = visualState)
+                            JarvisFace(state = visualState)
                             Text(
                                 when (visualState) {
                                     JarvisVisualState.IDLE -> "JARVIS standing by"
                                     JarvisVisualState.LISTENING -> "Listening"
                                     JarvisVisualState.THINKING -> "Processing"
-                                    JarvisVisualState.SPEAKING -> "Response ready"
+                                    JarvisVisualState.SPEAKING -> "Speaking"
                                     JarvisVisualState.ALERT -> "Incoming JARVIS alert"
                                 },
                                 style = MaterialTheme.typography.titleMedium
@@ -154,10 +154,10 @@ class MainActivity : ComponentActivity() {
                             HorizontalDivider()
                             Text("Phone receptionist", style = MaterialTheme.typography.titleLarge)
                             Text("JARVIS checks for completed Vapi calls while Watch Bridge is running and posts a phone notification. If LAXASFIT mirrors phone notifications, the alert will appear on the watch too.")
-                            Button(onClick = { alertPulse = true }) { Text("Preview JARVIS alert animation") }
+                            Button(onClick = { alertPulse = true }) { Text("Preview face alert") }
                         }
                         item {
-                            Text("Animated JARVIS states are built into Watch Bridge. Direct animation on a LAXASFIT screen still depends on whether the watch firmware exposes a programmable watch-face/display API.", style = MaterialTheme.typography.bodySmall)
+                            Text("The animated JARVIS face is now the primary Watch Bridge visual. On LAXASFIT itself, a static JARVIS face can be used as a custom watch-face image; real-time facial animation still depends on watch firmware support.", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
