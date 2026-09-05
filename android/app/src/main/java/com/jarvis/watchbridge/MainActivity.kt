@@ -20,6 +20,8 @@ import com.jarvis.watchbridge.ble.BleManager
 import com.jarvis.watchbridge.health.HealthRepository
 import com.jarvis.watchbridge.notifications.NotificationHelper
 import com.jarvis.watchbridge.notifications.PhoneMessageRepository
+import com.jarvis.watchbridge.ui.JarvisCore
+import com.jarvis.watchbridge.ui.JarvisVisualState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -48,6 +50,23 @@ class MainActivity : ComponentActivity() {
                 var reply by remember { mutableStateOf("JARVIS online") }
                 var healthText by remember { mutableStateOf("Health data not loaded") }
                 var busy by remember { mutableStateOf(false) }
+                var listening by remember { mutableStateOf(false) }
+                var alertPulse by remember { mutableStateOf(false) }
+
+                val visualState = when {
+                    alertPulse -> JarvisVisualState.ALERT
+                    busy -> JarvisVisualState.THINKING
+                    listening -> JarvisVisualState.LISTENING
+                    reply.isNotBlank() && reply != "JARVIS online" -> JarvisVisualState.SPEAKING
+                    else -> JarvisVisualState.IDLE
+                }
+
+                LaunchedEffect(alertPulse) {
+                    if (alertPulse) {
+                        delay(4_000)
+                        alertPulse = false
+                    }
+                }
 
                 val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
                 val healthLauncher = rememberLauncherForActivityResult(PermissionController.createRequestPermissionResultContract()) { }
@@ -56,6 +75,17 @@ class MainActivity : ComponentActivity() {
                     LazyColumn(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         item {
                             Text("JARVIS WATCH BRIDGE", style = MaterialTheme.typography.headlineSmall)
+                            JarvisCore(state = visualState)
+                            Text(
+                                when (visualState) {
+                                    JarvisVisualState.IDLE -> "JARVIS standing by"
+                                    JarvisVisualState.LISTENING -> "Listening"
+                                    JarvisVisualState.THINKING -> "Processing"
+                                    JarvisVisualState.SPEAKING -> "Response ready"
+                                    JarvisVisualState.ALERT -> "Incoming JARVIS alert"
+                                },
+                                style = MaterialTheme.typography.titleMedium
+                            )
                             Text(state.connectedName?.let { "Connected: $it" } ?: "No watch connected")
                             state.heartRateBpm?.let { Text("Direct BLE heart rate: $it bpm") }
                             state.error?.let { Text(it) }
@@ -102,24 +132,32 @@ class MainActivity : ComponentActivity() {
                             HorizontalDivider()
                             Text("Ask JARVIS", style = MaterialTheme.typography.titleLarge)
                             OutlinedTextField(prompt, { prompt = it }, label = { Text("Command") }, modifier = Modifier.fillMaxWidth())
-                            Button(enabled = !busy && prompt.isNotBlank(), onClick = {
-                                val msg = prompt
-                                busy = true
-                                lifecycleScope.launch {
-                                    reply = try { chat.send(msg, healthText) } catch (e: Exception) { "Error: ${e.message}" }
-                                    notifications.push("JARVIS", reply)
-                                    busy = false
-                                }
-                            }) { Text(if (busy) "Thinking…" else "Send") }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { listening = !listening },
+                                    colors = if (listening) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary) else ButtonDefaults.buttonColors()
+                                ) { Text(if (listening) "Stop listening" else "Listen") }
+                                Button(enabled = !busy && prompt.isNotBlank(), onClick = {
+                                    val msg = prompt
+                                    listening = false
+                                    busy = true
+                                    lifecycleScope.launch {
+                                        reply = try { chat.send(msg, healthText) } catch (e: Exception) { "Error: ${e.message}" }
+                                        notifications.push("JARVIS", reply)
+                                        busy = false
+                                    }
+                                }) { Text(if (busy) "Thinking…" else "Send") }
+                            }
                             Text(reply)
                         }
                         item {
                             HorizontalDivider()
                             Text("Phone receptionist", style = MaterialTheme.typography.titleLarge)
                             Text("JARVIS checks for completed Vapi calls while Watch Bridge is running and posts a phone notification. If LAXASFIT mirrors phone notifications, the alert will appear on the watch too.")
+                            Button(onClick = { alertPulse = true }) { Text("Preview JARVIS alert animation") }
                         }
                         item {
-                            Text("If LAXASFIT uses proprietary GATT services, keep its companion app (or a compatible Health Connect bridge) paired and let JARVIS consume normalized health data.", style = MaterialTheme.typography.bodySmall)
+                            Text("Animated JARVIS states are built into Watch Bridge. Direct animation on a LAXASFIT screen still depends on whether the watch firmware exposes a programmable watch-face/display API.", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
