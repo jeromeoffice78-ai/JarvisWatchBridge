@@ -29,7 +29,7 @@ import com.jarvis.watchbridge.ble.BleManager
 import com.jarvis.watchbridge.health.HealthRepository
 import com.jarvis.watchbridge.notifications.NotificationHelper
 import com.jarvis.watchbridge.notifications.PhoneMessageRepository
-import com.jarvis.watchbridge.ui.JarvisFace
+import com.jarvis.watchbridge.ui.JarvisPortrait
 import com.jarvis.watchbridge.ui.JarvisVisualState
 import com.jarvis.watchbridge.voice.AlwaysListeningService
 import com.jarvis.watchbridge.voice.SpeechOutput
@@ -130,13 +130,12 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 Column(
                                     Modifier
-                                        .background(
-                                            Brush.verticalGradient(listOf(JarvisBlueDeep, JarvisPanel, Color(0xFF0A111C)))
-                                        )
+                                        .background(Brush.verticalGradient(listOf(JarvisBlueDeep, JarvisPanel, Color(0xFF0A111C))))
                                         .padding(18.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    JarvisFace(state = visualState)
+                                    JarvisPortrait(state = visualState)
+                                    Spacer(Modifier.height(12.dp))
                                     Text(
                                         when (visualState) {
                                             JarvisVisualState.IDLE -> "STANDING BY"
