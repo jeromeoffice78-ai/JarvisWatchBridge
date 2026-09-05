@@ -9,11 +9,13 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.jarvis.watchbridge"
+        // Fresh package ID prevents Android from treating this Chairman build
+        // as an update to older test APKs signed by different ephemeral keys.
+        applicationId = "com.jarvis.chairman"
         minSdk = 28
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 220
+        versionName = "2.2.0"
 
         val apiBaseUrl = System.getenv("JARVIS_API_BASE_URL")
             ?.takeIf { it.isNotBlank() }
