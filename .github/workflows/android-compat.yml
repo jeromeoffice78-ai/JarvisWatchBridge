@@ -1,4 +1,4 @@
-name: JARVIS Full Native Android
+name: JARVIS Chairman Android
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 jobs:
-  build-full-native:
+  build-chairman:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -36,21 +36,7 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-36" "build-tools;35.0.0"
 
-      - name: Prepare full JARVIS Android app
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('android/app/build.gradle.kts')
-          text = p.read_text()
-          text = text.replace('applicationId = "com.jarvis.watchbridge"', 'applicationId = "com.jarvis.watchbridge.full"')
-          text = text.replace('versionCode = 3', 'versionCode = 27')
-          text = text.replace('versionName = "0.3.0"', 'versionName = "2.1.2"')
-          p.write_text(text)
-          PY
-
-      - name: Build full native JARVIS APK
+      - name: Build Chairman JARVIS APK
         working-directory: android
         env:
           JARVIS_API_BASE_URL: https://jarvis-watch-bridge-api.onrender.com/
@@ -61,37 +47,39 @@ jobs:
           APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -1)"
           test -f "$APK"
           mkdir -p ../dist
-          cp "$APK" ../dist/JARVIS-FULL-NATIVE-v2.1.2.apk
+          cp "$APK" ../dist/JARVIS-CHAIRMAN-v2.2.0.apk
 
           APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)"
           AAPT="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt | sort -V | tail -1)"
-          "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-FULL-NATIVE-v2.1.2.apk
-          "$AAPT" dump badging ../dist/JARVIS-FULL-NATIVE-v2.1.2.apk > /tmp/badging.txt
-          "$AAPT" dump permissions ../dist/JARVIS-FULL-NATIVE-v2.1.2.apk > /tmp/permissions.txt
+          "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-CHAIRMAN-v2.2.0.apk
+          "$AAPT" dump badging ../dist/JARVIS-CHAIRMAN-v2.2.0.apk > /tmp/badging.txt
+          "$AAPT" dump permissions ../dist/JARVIS-CHAIRMAN-v2.2.0.apk > /tmp/permissions.txt
           cat /tmp/badging.txt
           cat /tmp/permissions.txt
-          grep -Fq "package: name='com.jarvis.watchbridge.full'" /tmp/badging.txt
+          grep -Fq "package: name='com.jarvis.chairman'" /tmp/badging.txt
+          grep -Fq "versionCode='220'" /tmp/badging.txt
+          grep -Fq "versionName='2.2.0'" /tmp/badging.txt
           for permission in android.permission.INTERNET android.permission.RECORD_AUDIO android.permission.BLUETOOTH_SCAN android.permission.BLUETOOTH_CONNECT android.permission.FOREGROUND_SERVICE_MICROPHONE; do
             grep -Fq "$permission" /tmp/permissions.txt || { echo "Missing required permission: $permission" >&2; exit 1; }
           done
-          sha256sum ../dist/JARVIS-FULL-NATIVE-v2.1.2.apk > ../dist/SHA256SUMS.txt
+          sha256sum ../dist/JARVIS-CHAIRMAN-v2.2.0.apk > ../dist/SHA256SUMS.txt
 
-      - name: Publish full native release
+      - name: Publish Chairman release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          TAG="jarvis-full-native-v2.1.2-run-${GITHUB_RUN_ID}"
+          TAG="jarvis-chairman-v2.2.0-run-${GITHUB_RUN_ID}"
           gh release create "$TAG" \
-            dist/JARVIS-FULL-NATIVE-v2.1.2.apk \
+            dist/JARVIS-CHAIRMAN-v2.2.0.apk \
             dist/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
-            --title "JARVIS Full Native Android v2.1.2" \
-            --notes "Corrected full native JARVIS Android build. Health Connect is availability-checked and lazy-loaded to prevent unsupported-device startup crashes. Includes JARVIS chat, BLE watch connection, health integration where available, notifications, phone-message sync, audio routing, speech output, wake-word service, and synchronized animated JARVIS face."
+            --title "JARVIS Chairman Android v2.2.0" \
+            --notes "Chairman package build using com.jarvis.chairman to avoid conflicts with earlier JARVIS test packages. Includes the Chairman command-center UI, embedded human JARVIS portrait, chat, BLE watch connection, health integration where available, notifications, audio routing, speech output, wake-word service, and JARVIS visual states."
 
       - uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-FULL-NATIVE-v2.1.2
+          name: JARVIS-CHAIRMAN-v2.2.0
           path: dist/*
           retention-days: 30
