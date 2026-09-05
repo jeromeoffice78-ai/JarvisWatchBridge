@@ -9,8 +9,10 @@ import androidx.health.connect.client.time.TimeRangeFilter
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 
-class HealthRepository(context: Context) {
-    private val client = HealthConnectClient.getOrCreate(context)
+class HealthRepository(private val context: Context) {
+    private val client: HealthConnectClient by lazy {
+        HealthConnectClient.getOrCreate(context.applicationContext)
+    }
 
     val permissions = setOf(
         HealthPermission.getReadPermission(HeartRateRecord::class),
@@ -19,9 +21,18 @@ class HealthRepository(context: Context) {
         HealthPermission.getReadPermission(OxygenSaturationRecord::class)
     )
 
-    suspend fun hasPermissions(): Boolean = client.permissionController.getGrantedPermissions().containsAll(permissions)
+    fun availabilityStatus(): Int = HealthConnectClient.getSdkStatus(context.applicationContext)
+
+    fun isAvailable(): Boolean = availabilityStatus() == HealthConnectClient.SDK_AVAILABLE
+
+    suspend fun hasPermissions(): Boolean {
+        if (!isAvailable()) return false
+        return client.permissionController.getGrantedPermissions().containsAll(permissions)
+    }
 
     suspend fun snapshot(): String {
+        if (!isAvailable()) return "Health Connect is unavailable on this device"
+
         val end = Instant.now()
         val start = end.minus(24, ChronoUnit.HOURS)
         val range = TimeRangeFilter.between(start, end)
