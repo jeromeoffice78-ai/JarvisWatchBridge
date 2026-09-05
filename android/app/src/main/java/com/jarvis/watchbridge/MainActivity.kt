@@ -19,19 +19,27 @@ import com.jarvis.watchbridge.ai.ChatRepository
 import com.jarvis.watchbridge.ble.BleManager
 import com.jarvis.watchbridge.health.HealthRepository
 import com.jarvis.watchbridge.notifications.NotificationHelper
+import com.jarvis.watchbridge.notifications.PhoneMessageRepository
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private lateinit var ble: BleManager
     private lateinit var health: HealthRepository
     private val chat = ChatRepository()
     private lateinit var notifications: NotificationHelper
+    private val phoneMessages = PhoneMessageRepository()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ble = BleManager(this)
         health = HealthRepository(this)
         notifications = NotificationHelper(this)
+
+        startPhoneMessageSync()
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
@@ -106,10 +114,39 @@ class MainActivity : ComponentActivity() {
                             Text(reply)
                         }
                         item {
+                            HorizontalDivider()
+                            Text("Phone receptionist", style = MaterialTheme.typography.titleLarge)
+                            Text("JARVIS checks for completed Vapi calls while Watch Bridge is running and posts a phone notification. If LAXASFIT mirrors phone notifications, the alert will appear on the watch too.")
+                        }
+                        item {
                             Text("If LAXASFIT uses proprietary GATT services, keep its companion app (or a compatible Health Connect bridge) paired and let JARVIS consume normalized health data.", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private fun startPhoneMessageSync() {
+        lifecycleScope.launch {
+            val prefs = getSharedPreferences("jarvis_phone_sync", MODE_PRIVATE)
+            while (isActive) {
+                try {
+                    val latest = withContext(Dispatchers.IO) { phoneMessages.latest() }
+                    if (latest != null && latest.id.isNotBlank()) {
+                        val lastSeen = prefs.getString("last_message_id", null)
+                        if (lastSeen == null) {
+                            prefs.edit().putString("last_message_id", latest.id).apply()
+                        } else if (lastSeen != latest.id) {
+                            val caller = latest.callerPhone ?: "Unknown caller"
+                            notifications.push("📞 JARVIS call message", "$caller — ${latest.summary}")
+                            prefs.edit().putString("last_message_id", latest.id).apply()
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Keep the sync loop alive; a later poll can recover automatically.
+                }
+                delay(30_000)
             }
         }
     }
