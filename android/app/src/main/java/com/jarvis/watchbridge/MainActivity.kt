@@ -1,6 +1,7 @@
 package com.jarvis.watchbridge
 
 import android.Manifest
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -13,15 +14,19 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.lifecycleScope
 import com.jarvis.watchbridge.ai.ChatRepository
+import com.jarvis.watchbridge.audio.AudioRouter
 import com.jarvis.watchbridge.ble.BleManager
 import com.jarvis.watchbridge.health.HealthRepository
 import com.jarvis.watchbridge.notifications.NotificationHelper
 import com.jarvis.watchbridge.notifications.PhoneMessageRepository
 import com.jarvis.watchbridge.ui.JarvisFace
 import com.jarvis.watchbridge.ui.JarvisVisualState
+import com.jarvis.watchbridge.voice.AlwaysListeningService
+import com.jarvis.watchbridge.voice.SpeechOutput
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -33,6 +38,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var health: HealthRepository
     private val chat = ChatRepository()
     private lateinit var notifications: NotificationHelper
+    private lateinit var audioRouter: AudioRouter
+    private lateinit var speech: SpeechOutput
     private val phoneMessages = PhoneMessageRepository()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -40,6 +47,8 @@ class MainActivity : ComponentActivity() {
         ble = BleManager(this)
         health = HealthRepository(this)
         notifications = NotificationHelper(this)
+        audioRouter = AudioRouter(this)
+        speech = SpeechOutput(this)
 
         startPhoneMessageSync()
 
@@ -51,12 +60,15 @@ class MainActivity : ComponentActivity() {
                 var healthText by remember { mutableStateOf("Health data not loaded") }
                 var busy by remember { mutableStateOf(false) }
                 var listening by remember { mutableStateOf(false) }
+                var alwaysListening by remember { mutableStateOf(false) }
                 var alertPulse by remember { mutableStateOf(false) }
+                var routes by remember { mutableStateOf(audioRouter.availableRoutes()) }
+                var selectedRoute by remember { mutableStateOf("Device audio") }
 
                 val visualState = when {
                     alertPulse -> JarvisVisualState.ALERT
                     busy -> JarvisVisualState.THINKING
-                    listening -> JarvisVisualState.LISTENING
+                    listening || alwaysListening -> JarvisVisualState.LISTENING
                     reply.isNotBlank() && reply != "JARVIS online" -> JarvisVisualState.SPEAKING
                     else -> JarvisVisualState.IDLE
                 }
@@ -79,13 +91,14 @@ class MainActivity : ComponentActivity() {
                             Text(
                                 when (visualState) {
                                     JarvisVisualState.IDLE -> "JARVIS standing by"
-                                    JarvisVisualState.LISTENING -> "Listening"
+                                    JarvisVisualState.LISTENING -> if (alwaysListening) "Always listening for ‘Jarvis’" else "Listening"
                                     JarvisVisualState.THINKING -> "Processing"
                                     JarvisVisualState.SPEAKING -> "Speaking"
                                     JarvisVisualState.ALERT -> "Incoming JARVIS alert"
                                 },
                                 style = MaterialTheme.typography.titleMedium
                             )
+                            Text("Audio: $selectedRoute")
                             Text(state.connectedName?.let { "Connected: $it" } ?: "No watch connected")
                             state.heartRateBpm?.let { Text("Direct BLE heart rate: $it bpm") }
                             state.error?.let { Text(it) }
@@ -94,6 +107,7 @@ class MainActivity : ComponentActivity() {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(onClick = {
                                     permissionLauncher.launch(arrayOf(
+                                        Manifest.permission.RECORD_AUDIO,
                                         Manifest.permission.BLUETOOTH_SCAN,
                                         Manifest.permission.BLUETOOTH_CONNECT,
                                         Manifest.permission.POST_NOTIFICATIONS,
@@ -112,6 +126,37 @@ class MainActivity : ComponentActivity() {
                                     Text(d.address, style = MaterialTheme.typography.bodySmall)
                                 }
                             }
+                        }
+                        item {
+                            HorizontalDivider()
+                            Text("Voice & audio", style = MaterialTheme.typography.titleLarge)
+                            Text("Phone/tablet microphone and speaker are the default. Compatible Bluetooth earbuds, headsets, speakers, or watches appear below when Android exposes them as communication audio devices.")
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = {
+                                    audioRouter.useDeviceAudio()
+                                    selectedRoute = "Device audio"
+                                }) { Text("Use device") }
+                                Button(onClick = { routes = audioRouter.availableRoutes() }) { Text("Refresh audio") }
+                            }
+                            routes.filter { it.id >= 0 }.forEach { route ->
+                                TextButton(onClick = {
+                                    if (audioRouter.useRoute(route.id)) selectedRoute = route.name
+                                }) { Text("Use ${route.name}") }
+                            }
+                            Button(onClick = {
+                                if (!alwaysListening) {
+                                    val intent = Intent(this@MainActivity, AlwaysListeningService::class.java)
+                                        .setAction(AlwaysListeningService.ACTION_START)
+                                    ContextCompat.startForegroundService(this@MainActivity, intent)
+                                    alwaysListening = true
+                                } else {
+                                    stopService(Intent(this@MainActivity, AlwaysListeningService::class.java))
+                                    alwaysListening = false
+                                }
+                            }) {
+                                Text(if (alwaysListening) "Stop always listening" else "Enable ‘Jarvis’ wake word")
+                            }
+                            Text("Always-listening mode runs as a visible Android microphone foreground service. Android will show a persistent notification while the microphone service is active.", style = MaterialTheme.typography.bodySmall)
                         }
                         item {
                             HorizontalDivider()
@@ -144,6 +189,7 @@ class MainActivity : ComponentActivity() {
                                     lifecycleScope.launch {
                                         reply = try { chat.send(msg, healthText) } catch (e: Exception) { "Error: ${e.message}" }
                                         notifications.push("JARVIS", reply)
+                                        speech.speak(reply)
                                         busy = false
                                     }
                                 }) { Text(if (busy) "Thinking…" else "Send") }
@@ -153,16 +199,22 @@ class MainActivity : ComponentActivity() {
                         item {
                             HorizontalDivider()
                             Text("Phone receptionist", style = MaterialTheme.typography.titleLarge)
-                            Text("JARVIS checks for completed Vapi calls while Watch Bridge is running and posts a phone notification. If LAXASFIT mirrors phone notifications, the alert will appear on the watch too.")
+                            Text("JARVIS checks for completed Vapi calls while Watch Bridge is running and posts a phone notification. If LAXASFIT mirrors phone notifications, the alert can appear on the watch too.")
                             Button(onClick = { alertPulse = true }) { Text("Preview face alert") }
                         }
                         item {
-                            Text("The animated JARVIS face is now the primary Watch Bridge visual. On LAXASFIT itself, a static JARVIS face can be used as a custom watch-face image; real-time facial animation still depends on watch firmware support.", style = MaterialTheme.typography.bodySmall)
+                            Text("Portable mode is enabled: BLE is optional, so JARVIS can run on compatible Android phones or tablets even when no watch is present. Watch-only capabilities remain dependent on the hardware and firmware exposed by that watch.", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        speech.shutdown()
+        audioRouter.clearRoute()
+        super.onDestroy()
     }
 
     private fun startPhoneMessageSync() {
