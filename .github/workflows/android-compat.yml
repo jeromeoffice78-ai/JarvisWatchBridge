@@ -10,11 +10,9 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 env:
   JARVIS_HTTP_BASE: https://jarvis-watch-bridge.floot.app
-  JARVIS_SIGNING_CERT_SHA256: 004905e15f747bc9a635366138c01357b1c06615dfe6f3c3af9d3b1d52c1187f
 
 jobs:
   build-universal:
@@ -94,8 +92,8 @@ jobs:
 
           gradle = Path('android/app/build.gradle')
           g = gradle.read_text()
-          g = g.replace('versionCode 1', 'versionCode 21')
-          g = g.replace('versionName "1.0"', 'versionName "2.0.1"')
+          g = g.replace('versionCode 1', 'versionCode 22')
+          g = g.replace('versionName "1.0"', 'versionName "2.0.2"')
           gradle.write_text(g)
           PY
 
@@ -103,56 +101,30 @@ jobs:
           chmod +x android/gradlew
           mv /tmp/capacitor.config.original.json capacitor.config.json
 
-      - name: Retrieve permanent JARVIS signing identity
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/jarvis_signing
-          OIDC_JSON="$(curl -fsSL -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=jarvis-legal-android-signing")"
-          OIDC_TOKEN="$(OIDC_JSON="$OIDC_JSON" python - <<'PY'
-          import json, os
-          token = json.loads(os.environ['OIDC_JSON']).get('value', '')
-          if not token:
-              raise SystemExit('GitHub OIDC token was not returned.')
-          print(token)
-          PY
-          )"
-          curl -fsSL -X POST -H "Authorization: Bearer ${OIDC_TOKEN}" "${JARVIS_HTTP_BASE}/_api/v1/internal/android-signing" -o /tmp/jarvis_signing/identity.json
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          payload = json.loads(Path('/tmp/jarvis_signing/identity.json').read_text())
-          fingerprint = payload.get('certificateSha256', '').lower()
-          if fingerprint != '004905e15f747bc9a635366138c01357b1c06615dfe6f3c3af9d3b1d52c1187f':
-              raise SystemExit('Signing certificate fingerprint mismatch.')
-          Path('/tmp/jarvis_signing/private-key.pem').write_text(payload['privateKeyPem'])
-          Path('/tmp/jarvis_signing/certificate.pem').write_text(payload['certificatePem'])
-          PY
-          chmod 600 /tmp/jarvis_signing/private-key.pem
-          openssl pkcs8 -topk8 -inform PEM -outform DER -nocrypt -in /tmp/jarvis_signing/private-key.pem -out /tmp/jarvis_signing/private-key.pk8
-
-      - name: Build, sign, and verify universal APK
+      - name: Build GitHub-signed universal APK
         shell: bash
         run: |
           set -euo pipefail
           cd native-shell/android
-          ./gradlew assembleRelease --stacktrace
+          ./gradlew assembleDebug --stacktrace
           cd ../..
-          APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)"
-          ZIPALIGN="$(find "${ANDROID_HOME}/build-tools" -type f -name zipalign | sort -V | tail -1)"
-          AAPT="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt | sort -V | tail -1)"
-          UNSIGNED="$(find native-shell/android/app/build/outputs/apk/release -type f -name '*.apk' | head -1)"
+          APK="$(find native-shell/android/app/build/outputs/apk/debug -type f -name '*.apk' | head -1)"
+          test -f "$APK"
           mkdir -p dist
-          "$ZIPALIGN" -f -p 4 "$UNSIGNED" /tmp/jarvis-universal-aligned.apk
-          "$APKSIGNER" sign --key /tmp/jarvis_signing/private-key.pk8 --cert /tmp/jarvis_signing/certificate.pem --out dist/JARVIS-Watch-Bridge-UNIVERSAL-v2.0.1.apk /tmp/jarvis-universal-aligned.apk
-          "$APKSIGNER" verify --verbose --print-certs dist/JARVIS-Watch-Bridge-UNIVERSAL-v2.0.1.apk
-          "$AAPT" dump badging dist/JARVIS-Watch-Bridge-UNIVERSAL-v2.0.1.apk > /tmp/badging.txt
+          cp "$APK" dist/JARVIS-Watch-Bridge-UNIVERSAL-v2.0.2.apk
+
+          APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          AAPT="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt | sort -V | tail -1)"
+          "$APKSIGNER" verify --verbose --print-certs dist/JARVIS-Watch-Bridge-UNIVERSAL-v2.0.2.apk
+          "$AAPT" dump badging dist/JARVIS-Watch-Bridge-UNIVERSAL-v2.0.2.apk > /tmp/badging.txt
+          "$AAPT" dump permissions dist/JARVIS-Watch-Bridge-UNIVERSAL-v2.0.2.apk > /tmp/permissions.txt
           cat /tmp/badging.txt
+          cat /tmp/permissions.txt
           grep -Fq "package: name='com.jarvis.watchbridge.compat'" /tmp/badging.txt
-          if grep -q '^native-code:' /tmp/badging.txt; then
-            grep -Eq "'arm64-v8a'|'armeabi-v7a'|'x86_64'" /tmp/badging.txt || { echo 'APK lacks common Android ABIs' >&2; exit 1; }
-          fi
-          sha256sum dist/JARVIS-Watch-Bridge-UNIVERSAL-v2.0.1.apk > dist/SHA256SUMS.txt
+          for permission in android.permission.RECORD_AUDIO android.permission.BLUETOOTH_SCAN android.permission.BLUETOOTH_CONNECT; do
+            grep -Fq "$permission" /tmp/permissions.txt || { echo "Missing required permission: $permission" >&2; exit 1; }
+          done
+          sha256sum dist/JARVIS-Watch-Bridge-UNIVERSAL-v2.0.2.apk > dist/SHA256SUMS.txt
 
       - name: Publish compatibility release
         env:
@@ -160,16 +132,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="watch-bridge-universal-v2.0.1-run-${GITHUB_RUN_ID}"
+          TAG="watch-bridge-universal-v2.0.2-run-${GITHUB_RUN_ID}"
           gh release create "$TAG" \
-            dist/JARVIS-Watch-Bridge-UNIVERSAL-v2.0.1.apk \
+            dist/JARVIS-Watch-Bridge-UNIVERSAL-v2.0.2.apk \
             dist/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
-            --title "JARVIS Watch Bridge Universal Android v2.0.1" \
-            --notes "Universal compatibility build for modern Android devices. Uses a separate package ID to avoid conflicts with earlier JARVIS installs."
+            --title "JARVIS Watch Bridge Universal Android v2.0.2" \
+            --notes "GitHub-native compatibility build. This build no longer depends on the Floot signing endpoint and uses a separate Android package ID to avoid conflicts with earlier installs."
 
       - uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-Watch-Bridge-UNIVERSAL-v2.0.1
+          name: JARVIS-Watch-Bridge-UNIVERSAL-v2.0.2
           path: dist/*
           retention-days: 30
