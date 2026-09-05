@@ -23,6 +23,8 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - uses: android-actions/setup-android@v3
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
@@ -43,8 +45,8 @@ jobs:
           p = Path('android/app/build.gradle.kts')
           text = p.read_text()
           text = text.replace('applicationId = "com.jarvis.watchbridge"', 'applicationId = "com.jarvis.watchbridge.full"')
-          text = text.replace('versionCode = 3', 'versionCode = 25')
-          text = text.replace('versionName = "0.3.0"', 'versionName = "2.1.0"')
+          text = text.replace('versionCode = 3', 'versionCode = 26')
+          text = text.replace('versionName = "0.3.0"', 'versionName = "2.1.1"')
           p.write_text(text)
           PY
 
@@ -59,20 +61,20 @@ jobs:
           APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -1)"
           test -f "$APK"
           mkdir -p ../dist
-          cp "$APK" ../dist/JARVIS-FULL-NATIVE-v2.1.0.apk
+          cp "$APK" ../dist/JARVIS-FULL-NATIVE-v2.1.1.apk
 
           APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)"
           AAPT="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt | sort -V | tail -1)"
-          "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-FULL-NATIVE-v2.1.0.apk
-          "$AAPT" dump badging ../dist/JARVIS-FULL-NATIVE-v2.1.0.apk > /tmp/badging.txt
-          "$AAPT" dump permissions ../dist/JARVIS-FULL-NATIVE-v2.1.0.apk > /tmp/permissions.txt
+          "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-FULL-NATIVE-v2.1.1.apk
+          "$AAPT" dump badging ../dist/JARVIS-FULL-NATIVE-v2.1.1.apk > /tmp/badging.txt
+          "$AAPT" dump permissions ../dist/JARVIS-FULL-NATIVE-v2.1.1.apk > /tmp/permissions.txt
           cat /tmp/badging.txt
           cat /tmp/permissions.txt
           grep -Fq "package: name='com.jarvis.watchbridge.full'" /tmp/badging.txt
           for permission in android.permission.INTERNET android.permission.RECORD_AUDIO android.permission.BLUETOOTH_SCAN android.permission.BLUETOOTH_CONNECT android.permission.FOREGROUND_SERVICE_MICROPHONE; do
             grep -Fq "$permission" /tmp/permissions.txt || { echo "Missing required permission: $permission" >&2; exit 1; }
           done
-          sha256sum ../dist/JARVIS-FULL-NATIVE-v2.1.0.apk > ../dist/SHA256SUMS.txt
+          sha256sum ../dist/JARVIS-FULL-NATIVE-v2.1.1.apk > ../dist/SHA256SUMS.txt
 
       - name: Publish full native release
         env:
@@ -80,16 +82,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="jarvis-full-native-v2.1.0-run-${GITHUB_RUN_ID}"
+          TAG="jarvis-full-native-v2.1.1-run-${GITHUB_RUN_ID}"
           gh release create "$TAG" \
-            dist/JARVIS-FULL-NATIVE-v2.1.0.apk \
+            dist/JARVIS-FULL-NATIVE-v2.1.1.apk \
             dist/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
-            --title "JARVIS Full Native Android v2.1.0" \
-            --notes "Full native JARVIS Android build from the designed Kotlin/Compose application. Includes JARVIS chat, BLE watch scanning/connection, health access, notifications, phone-message sync, audio routing, speech output, wake-word foreground service, and the animated JARVIS face. Uses a separate package ID so it can be installed beside earlier test builds."
+            --title "JARVIS Full Native Android v2.1.1" \
+            --notes "Full native JARVIS Android build from the designed Kotlin/Compose application. Includes JARVIS chat, BLE watch scanning/connection, health access, notifications, phone-message sync, audio routing, speech output, wake-word foreground service, and the animated JARVIS face. Speech events now drive avatar animation state. Uses a separate package ID so it can be installed beside earlier test builds."
 
       - uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-FULL-NATIVE-v2.1.0
+          name: JARVIS-FULL-NATIVE-v2.1.1
           path: dist/*
           retention-days: 30
