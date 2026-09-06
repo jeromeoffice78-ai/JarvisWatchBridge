@@ -1,20 +1,28 @@
-name: JARVIS Chairman Android
+name: JARVIS Watch Bridge v2.5 Production
 
 on:
   workflow_dispatch:
-  push:
+  pull_request:
     branches: [main]
     paths:
       - 'android/**'
+      - 'backend/**'
+      - '.github/workflows/android-compat.yml'
+  push:
+    branches: [main, production-hardening-v2.3.0]
+    paths:
+      - 'android/**'
+      - 'backend/**'
       - '.github/workflows/android-compat.yml'
 
 permissions:
   contents: write
 
 jobs:
-  build-chairman:
+  verify-production:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
     steps:
       - uses: actions/checkout@v5
 
@@ -36,50 +44,128 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-36" "build-tools;35.0.0"
 
-      - name: Build Chairman JARVIS APK
-        working-directory: android
+      - name: Prepare persistent release signing
+        id: signing
         env:
-          JARVIS_API_BASE_URL: https://jarvis-watch-bridge-api.onrender.com/
+          KEYSTORE_B64: ${{ secrets.JARVIS_RELEASE_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.JARVIS_RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.JARVIS_RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.JARVIS_RELEASE_KEY_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
-          gradle :app:assembleDebug --stacktrace
-          APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -1)"
-          test -f "$APK"
-          mkdir -p ../dist
-          cp "$APK" ../dist/JARVIS-CHAIRMAN-v2.2.0.apk
+          if [[ -n "${KEYSTORE_B64:-}" && -n "${STORE_PASSWORD:-}" && -n "${KEY_ALIAS:-}" && -n "${KEY_PASSWORD:-}" ]]; then
+            KEYSTORE_PATH="$RUNNER_TEMP/jarvis-watch-bridge-release.jks"
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE_PATH"
+            chmod 600 "$KEYSTORE_PATH"
+            keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "JARVIS_RELEASE_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Stable signing secrets are not configured; CI will produce an unsigned release candidate only."
+          fi
 
-          APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)"
+      - name: Compile, test and lint
+        working-directory: android
+        env:
+          JARVIS_API_BASE_URL: https://jarvis-watch-bridge-api.onrender.com/
+          JARVIS_SETUP_TOKEN: ${{ secrets.JARVIS_SETUP_TOKEN }}
+          JARVIS_RELEASE_STORE_PASSWORD: ${{ secrets.JARVIS_RELEASE_STORE_PASSWORD }}
+          JARVIS_RELEASE_KEY_ALIAS: ${{ secrets.JARVIS_RELEASE_KEY_ALIAS }}
+          JARVIS_RELEASE_KEY_PASSWORD: ${{ secrets.JARVIS_RELEASE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle :app:testReleaseUnitTest :app:lintRelease :app:assembleRelease :app:bundleRelease --stacktrace
+
+      - name: Verify production APK contract
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find app/build/outputs/apk/release -type f -name '*.apk' | head -1)"
+          AAB="$(find app/build/outputs/bundle/release -type f -name '*.aab' | head -1)"
+          test -f "$APK"
+          test -f "$AAB"
+
           AAPT="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt | sort -V | tail -1)"
-          "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-CHAIRMAN-v2.2.0.apk
-          "$AAPT" dump badging ../dist/JARVIS-CHAIRMAN-v2.2.0.apk > /tmp/badging.txt
-          "$AAPT" dump permissions ../dist/JARVIS-CHAIRMAN-v2.2.0.apk > /tmp/permissions.txt
+          APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          APKSIGNER_DIR="$(dirname "$APKSIGNER")"
+          APKANALYZER="$(find "${ANDROID_HOME}" -type f -name apkanalyzer | head -1 || true)"
+
+          "$AAPT" dump badging "$APK" > /tmp/badging.txt
+          "$AAPT" dump permissions "$APK" > /tmp/permissions.txt
           cat /tmp/badging.txt
           cat /tmp/permissions.txt
-          grep -Fq "package: name='com.jarvis.chairman'" /tmp/badging.txt
-          grep -Fq "versionCode='220'" /tmp/badging.txt
-          grep -Fq "versionName='2.2.0'" /tmp/badging.txt
-          for permission in android.permission.INTERNET android.permission.RECORD_AUDIO android.permission.BLUETOOTH_SCAN android.permission.BLUETOOTH_CONNECT android.permission.FOREGROUND_SERVICE_MICROPHONE; do
-            grep -Fq "$permission" /tmp/permissions.txt || { echo "Missing required permission: $permission" >&2; exit 1; }
-          done
-          sha256sum ../dist/JARVIS-CHAIRMAN-v2.2.0.apk > ../dist/SHA256SUMS.txt
 
-      - name: Publish Chairman release
+          grep -Fq "package: name='com.jarvis.chairman'" /tmp/badging.txt
+          grep -Fq "versionCode='250'" /tmp/badging.txt
+          grep -Fq "versionName='2.5.0'" /tmp/badging.txt
+          grep -Fq "targetSdkVersion:'36'" /tmp/badging.txt
+
+          for permission in \
+            android.permission.INTERNET \
+            android.permission.RECORD_AUDIO \
+            android.permission.CAMERA \
+            android.permission.BLUETOOTH_SCAN \
+            android.permission.BLUETOOTH_CONNECT \
+            android.permission.POST_NOTIFICATIONS \
+            android.permission.FOREGROUND_SERVICE_MICROPHONE \
+            android.permission.FOREGROUND_SERVICE_DATA_SYNC; do
+            grep -Fq "$permission" /tmp/permissions.txt || {
+              echo "Missing required permission: $permission" >&2
+              exit 1
+            }
+          done
+
+          if [[ -n "$APKANALYZER" ]]; then
+            DEBUGGABLE="$($APKANALYZER manifest debuggable "$APK" | tr -d '\r\n')"
+            [[ "$DEBUGGABLE" == "false" ]] || {
+              echo "Release APK is debuggable: $DEBUGGABLE" >&2
+              exit 1
+            }
+          fi
+
+          mkdir -p ../dist
+          cp "$APK" ../dist/JARVIS-Watch-Bridge-v2.5.0-FULL-RELEASE.apk
+          cp "$AAB" ../dist/JARVIS-Watch-Bridge-v2.5.0-FULL-RELEASE.aab
+
+          if [[ "${{ steps.signing.outputs.ready }}" == "true" ]]; then
+            "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-Watch-Bridge-v2.5.0-FULL-RELEASE.apk
+          else
+            echo "UNSIGNED_RELEASE_CANDIDATE" > ../dist/SIGNING-STATUS.txt
+          fi
+
+          sha256sum ../dist/JARVIS-Watch-Bridge-v2.5.0-FULL-RELEASE.apk \
+                    ../dist/JARVIS-Watch-Bridge-v2.5.0-FULL-RELEASE.aab \
+                    > ../dist/SHA256SUMS.txt
+
+      - name: Verify backend syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/main.py
+
+      - name: Upload verified build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-Watch-Bridge-v2.5.0-production-candidate
+          path: dist/*
+          retention-days: 30
+
+      - name: Publish signed production release
+        if: github.ref == 'refs/heads/main' && steps.signing.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          TAG="jarvis-chairman-v2.2.0-run-${GITHUB_RUN_ID}"
+          TAG="jarvis-watch-bridge-v2.5.0-${GITHUB_RUN_ID}"
           gh release create "$TAG" \
-            dist/JARVIS-CHAIRMAN-v2.2.0.apk \
+            dist/JARVIS-Watch-Bridge-v2.5.0-FULL-RELEASE.apk \
+            dist/JARVIS-Watch-Bridge-v2.5.0-FULL-RELEASE.aab \
             dist/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
-            --title "JARVIS Chairman Android v2.2.0" \
-            --notes "Chairman package build using com.jarvis.chairman to avoid conflicts with earlier JARVIS test packages. Includes the Chairman command-center UI, embedded human JARVIS portrait, chat, BLE watch connection, health integration where available, notifications, audio routing, speech output, wake-word service, and JARVIS visual states."
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: JARVIS-CHAIRMAN-v2.2.0
-          path: dist/*
-          retention-days: 30
+            --title "JARVIS Watch Bridge v2.5.0 Production" \
+            --notes "Full Chairman production build: AI chat, BLE watch host/reconnect, Health Connect, voice/wake service, TTS/audio routing, phone alerts, multi-device takeover, mood adaptation, visible remote device controls, and device security scanner."
