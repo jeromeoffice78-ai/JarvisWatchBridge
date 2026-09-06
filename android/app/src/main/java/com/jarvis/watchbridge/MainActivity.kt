@@ -26,9 +26,13 @@ import androidx.lifecycle.lifecycleScope
 import com.jarvis.watchbridge.ai.ChatRepository
 import com.jarvis.watchbridge.audio.AudioRouter
 import com.jarvis.watchbridge.ble.BleManager
+import com.jarvis.watchbridge.control.JarvisRemoteCommandService
+import com.jarvis.watchbridge.device.DeviceRoleManager
 import com.jarvis.watchbridge.health.HealthRepository
+import com.jarvis.watchbridge.mood.MoodEngine
 import com.jarvis.watchbridge.notifications.NotificationHelper
 import com.jarvis.watchbridge.notifications.PhoneMessageRepository
+import com.jarvis.watchbridge.security.DeviceSecurityScanner
 import com.jarvis.watchbridge.ui.JarvisPortrait
 import com.jarvis.watchbridge.ui.JarvisVisualState
 import com.jarvis.watchbridge.voice.AlwaysListeningService
@@ -53,6 +57,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var notifications: NotificationHelper
     private lateinit var audioRouter: AudioRouter
     private lateinit var speech: SpeechOutput
+    private lateinit var deviceRoles: DeviceRoleManager
+    private lateinit var moodEngine: MoodEngine
     private val phoneMessages = PhoneMessageRepository()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +68,8 @@ class MainActivity : ComponentActivity() {
         notifications = NotificationHelper(this)
         audioRouter = AudioRouter(this)
         speech = SpeechOutput(this)
+        deviceRoles = DeviceRoleManager(this)
+        moodEngine = MoodEngine(this)
         startPhoneMessageSync()
 
         setContent {
@@ -87,6 +95,13 @@ class MainActivity : ComponentActivity() {
                 var selectedRoute by remember { mutableStateOf("Device audio") }
                 var showSystems by remember { mutableStateOf(false) }
                 var showHealth by remember { mutableStateOf(false) }
+                var deviceRole by remember { mutableStateOf("connecting") }
+                var primaryDeviceId by remember { mutableStateOf<String?>(null) }
+                var roleMessage by remember { mutableStateOf<String?>(null) }
+                var jarvisVolume by remember { mutableIntStateOf(100) }
+                var adaptiveMoodLabel by remember {
+                    mutableStateOf(if (moodEngine.isAdaptiveEnabled()) "Neutral" else "Off")
+                }
 
                 DisposableEffect(Unit) {
                     speech.setSpeakingListener { speaking -> runOnUiThread { isSpeaking = speaking } }
@@ -108,8 +123,42 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
-                val healthLauncher = rememberLauncherForActivityResult(PermissionController.createRequestPermissionResultContract()) { }
+                val permissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestMultiplePermissions()
+                ) { }
+                val healthLauncher = rememberLauncherForActivityResult(
+                    PermissionController.createRequestPermissionResultContract()
+                ) { }
+
+                LaunchedEffect(Unit) {
+                    try {
+                        val registered = deviceRoles.register(
+                            connected = ble.state.value.connectedName != null,
+                            watchBleAddress = ble.state.value.connectedAddress
+                        )
+                        deviceRole = registered.role
+                        primaryDeviceId = registered.primaryDeviceId
+                        if (registered.role == "primary") ble.connectTargetWatch()
+                    } catch (e: Exception) {
+                        roleMessage = e.message ?: "Device-role sync unavailable"
+                    }
+
+                    while (isActive) {
+                        delay(30_000)
+                        try {
+                            val heartbeat = deviceRoles.heartbeat(
+                                connected = ble.state.value.connectedName != null,
+                                watchBleAddress = ble.state.value.connectedAddress
+                            )
+                            if (heartbeat.role != deviceRole) {
+                                deviceRole = heartbeat.role
+                                if (deviceRole != "primary") ble.disconnect()
+                            }
+                        } catch (e: Exception) {
+                            roleMessage = e.message ?: "Device-role heartbeat failed"
+                        }
+                    }
+                }
 
                 Surface(Modifier.fillMaxSize(), color = Color(0xFF070B12)) {
                     LazyColumn(
@@ -118,8 +167,17 @@ class MainActivity : ComponentActivity() {
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         item {
-                            Text("JARVIS", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = JarvisText)
-                            Text("CHAIRMAN COMMAND CENTER", color = JarvisBlue, style = MaterialTheme.typography.labelLarge)
+                            Text(
+                                "JARVIS",
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = JarvisText
+                            )
+                            Text(
+                                "CHAIRMAN COMMAND CENTER • v2.5.0",
+                                color = JarvisBlue,
+                                style = MaterialTheme.typography.labelLarge
+                            )
                         }
 
                         item {
@@ -130,7 +188,11 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 Column(
                                     Modifier
-                                        .background(Brush.verticalGradient(listOf(JarvisBlueDeep, JarvisPanel, Color(0xFF0A111C))))
+                                        .background(
+                                            Brush.verticalGradient(
+                                                listOf(JarvisBlueDeep, JarvisPanel, Color(0xFF0A111C))
+                                            )
+                                        )
                                         .padding(18.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
@@ -154,7 +216,10 @@ class MainActivity : ComponentActivity() {
                         }
 
                         item {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
                                 StatusTile("WATCH", state.connectedName ?: "Not connected", Modifier.weight(1f))
                                 StatusTile("AUDIO", selectedRoute, Modifier.weight(1f))
                             }
@@ -166,8 +231,15 @@ class MainActivity : ComponentActivity() {
                                 shape = RoundedCornerShape(22.dp),
                                 colors = CardDefaults.cardColors(containerColor = JarvisPanel)
                             ) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Text("Talk to JARVIS", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                                Column(
+                                    Modifier.padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Text(
+                                        "Talk to JARVIS",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                     OutlinedTextField(
                                         value = prompt,
                                         onValueChange = { prompt = it },
@@ -175,12 +247,16 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier.fillMaxWidth(),
                                         shape = RoundedCornerShape(18.dp)
                                     )
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
                                         Button(
                                             onClick = { listening = !listening },
                                             modifier = Modifier.weight(1f),
                                             shape = RoundedCornerShape(16.dp)
                                         ) { Text(if (listening) "Stop" else "Listen") }
+
                                         Button(
                                             enabled = !busy && prompt.isNotBlank(),
                                             onClick = {
@@ -188,21 +264,49 @@ class MainActivity : ComponentActivity() {
                                                 listening = false
                                                 busy = true
                                                 lifecycleScope.launch {
-                                                    reply = try { chat.send(msg, healthText) } catch (e: Exception) { "I hit a connection problem: ${e.message ?: "unknown error"}" }
-                                                    busy = false
-                                                    notifications.push("JARVIS", reply)
-                                                    speech.speak(reply)
+                                                    val localControl = moodEngine.handleControlCommand(msg)
+                                                    if (localControl != null) {
+                                                        reply = localControl
+                                                        adaptiveMoodLabel = if (moodEngine.isAdaptiveEnabled()) "Neutral" else "Off"
+                                                        speech.setVoiceStyle(1.0f, 1.0f)
+                                                        busy = false
+                                                        notifications.push("JARVIS", reply)
+                                                        speech.speak(reply)
+                                                    } else {
+                                                        val mood = moodEngine.observe(msg)
+                                                        adaptiveMoodLabel = if (moodEngine.isAdaptiveEnabled()) {
+                                                            mood.label.displayName
+                                                        } else {
+                                                            "Off"
+                                                        }
+                                                        val adaptiveContext = listOf(
+                                                            healthText,
+                                                            moodEngine.responseDirective(mood)
+                                                        ).filter { it.isNotBlank() }.joinToString("\n\n")
+                                                        reply = try {
+                                                            chat.send(msg, adaptiveContext)
+                                                        } catch (e: Exception) {
+                                                            "I hit a connection problem: ${e.message ?: "unknown error"}"
+                                                        }
+                                                        speech.setVoiceStyle(mood.speechRate, mood.speechPitch)
+                                                        busy = false
+                                                        notifications.push("JARVIS", reply)
+                                                        speech.speak(reply)
+                                                    }
                                                 }
                                             },
                                             modifier = Modifier.weight(1f),
                                             shape = RoundedCornerShape(16.dp)
                                         ) { Text(if (busy) "Thinking…" else "Send") }
                                     }
+
                                     Button(
                                         onClick = {
                                             if (!alwaysListening) {
-                                                val intent = Intent(this@MainActivity, AlwaysListeningService::class.java)
-                                                    .setAction(AlwaysListeningService.ACTION_START)
+                                                val intent = Intent(
+                                                    this@MainActivity,
+                                                    AlwaysListeningService::class.java
+                                                ).setAction(AlwaysListeningService.ACTION_START)
                                                 ContextCompat.startForegroundService(this@MainActivity, intent)
                                                 alwaysListening = true
                                             } else {
@@ -226,12 +330,27 @@ class MainActivity : ComponentActivity() {
                                 shape = RoundedCornerShape(22.dp),
                                 colors = CardDefaults.cardColors(containerColor = JarvisPanel)
                             ) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("Quick status", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                                    Text(state.heartRateBpm?.let { "Heart rate: $it bpm" } ?: "Heart rate: waiting for watch", color = JarvisMuted)
+                                Column(
+                                    Modifier.padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        "Quick status",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        state.heartRateBpm?.let { "Heart rate: $it bpm" }
+                                            ?: "Heart rate: waiting for watch",
+                                        color = JarvisMuted
+                                    )
                                     Text("Phone receptionist: active while JARVIS is running", color = JarvisMuted)
                                     Text("Wake service: ${if (alwaysListening) "active" else "off"}", color = JarvisMuted)
-                                    state.error?.let { Text("Watch: $it", color = MaterialTheme.colorScheme.error) }
+                                    Text("Adaptive tone: $adaptiveMoodLabel", color = JarvisMuted)
+                                    Text("Device role: ${deviceRole.uppercase()}", color = JarvisMuted)
+                                    state.error?.let {
+                                        Text("Watch: $it", color = MaterialTheme.colorScheme.error)
+                                    }
                                 }
                             }
                         }
@@ -252,15 +371,26 @@ class MainActivity : ComponentActivity() {
                                     colors = CardDefaults.cardColors(containerColor = JarvisPanel),
                                     shape = RoundedCornerShape(20.dp)
                                 ) {
-                                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Column(
+                                        Modifier.padding(16.dp),
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
                                         Text(healthText)
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            Button(onClick = { healthLauncher.launch(health.permissions) }) { Text("Grant access") }
+                                            Button(onClick = { healthLauncher.launch(health.permissions) }) {
+                                                Text("Grant access")
+                                            }
                                             Button(onClick = {
                                                 lifecycleScope.launch {
                                                     healthText = try {
-                                                        if (health.hasPermissions()) health.snapshot() else "Grant Health Connect permissions first"
-                                                    } catch (e: Exception) { "Health unavailable: ${e.message}" }
+                                                        if (health.hasPermissions()) {
+                                                            health.snapshot()
+                                                        } else {
+                                                            "Grant Health Connect permissions first"
+                                                        }
+                                                    } catch (e: Exception) {
+                                                        "Health unavailable: ${e.message}"
+                                                    }
                                                 }
                                             }) { Text("Refresh") }
                                         }
@@ -285,41 +415,167 @@ class MainActivity : ComponentActivity() {
                                     colors = CardDefaults.cardColors(containerColor = JarvisPanel),
                                     shape = RoundedCornerShape(20.dp)
                                 ) {
-                                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Text("Watch & permissions", style = MaterialTheme.typography.titleMedium)
+                                    Column(
+                                        Modifier.padding(16.dp),
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Text(
+                                            "Watch & permissions",
+                                            style = MaterialTheme.typography.titleMedium
+                                        )
+                                        Text(
+                                            "Device role: ${if (deviceRole == "primary") "PRIMARY WATCH HOST" else if (deviceRole == "companion") "COMPANION MIRROR" else "CONNECTING"}",
+                                            color = if (deviceRole == "primary") JarvisBlue else JarvisMuted,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        primaryDeviceId?.let {
+                                            Text(
+                                                "Primary host ID: $it",
+                                                color = JarvisMuted,
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+                                        roleMessage?.let {
+                                            Text(
+                                                it,
+                                                color = MaterialTheme.colorScheme.error,
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+
+                                        if (deviceRole != "primary") {
+                                            Button(
+                                                onClick = {
+                                                    lifecycleScope.launch {
+                                                        roleMessage = "Requesting watch control…"
+                                                        try {
+                                                            val takeover = deviceRoles.takeOver(
+                                                                ble.state.value.connectedAddress
+                                                                    ?: BleManager.TARGET_WATCH_LE_ADDRESS
+                                                            )
+                                                            deviceRole = takeover.role
+                                                            primaryDeviceId = takeover.primaryDeviceId
+                                                            roleMessage = "This device is now the Primary Watch Host"
+                                                            ble.connectTargetWatch()
+                                                        } catch (e: Exception) {
+                                                            roleMessage = e.message ?: "Watch takeover failed"
+                                                        }
+                                                    }
+                                                },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) { Text("Take Over Watch Connection") }
+                                        }
+
+                                        Button(
+                                            onClick = { JarvisRemoteCommandService.start(this@MainActivity) },
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) { Text("Enable JARVIS Remote Control") }
+
+                                        Button(
+                                            onClick = {
+                                                startActivity(
+                                                    Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                                                )
+                                            },
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) { Text("Open Accessibility Permission") }
+
+                                        Button(
+                                            onClick = {
+                                                val report = DeviceSecurityScanner(this@MainActivity).scan()
+                                                roleMessage = "Security scan: ${report.scannedApps} apps, ${report.findings.size} findings"
+                                            },
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) { Text("Run Device Security Scan") }
+
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             Button(onClick = {
-                                                permissionLauncher.launch(arrayOf(
-                                                    Manifest.permission.RECORD_AUDIO,
-                                                    Manifest.permission.BLUETOOTH_SCAN,
-                                                    Manifest.permission.BLUETOOTH_CONNECT,
-                                                    Manifest.permission.POST_NOTIFICATIONS,
-                                                    Manifest.permission.ACTIVITY_RECOGNITION
-                                                ))
+                                                permissionLauncher.launch(
+                                                    arrayOf(
+                                                        Manifest.permission.RECORD_AUDIO,
+                                                        Manifest.permission.CAMERA,
+                                                        Manifest.permission.BLUETOOTH_SCAN,
+                                                        Manifest.permission.BLUETOOTH_CONNECT,
+                                                        Manifest.permission.POST_NOTIFICATIONS,
+                                                        Manifest.permission.ACTIVITY_RECOGNITION
+                                                    )
+                                                )
                                             }) { Text("Permissions") }
-                                            Button(onClick = { if (state.scanning) ble.stopScan() else ble.startScan() }) {
+
+                                            Button(
+                                                enabled = deviceRole == "primary",
+                                                onClick = {
+                                                    if (state.scanning) ble.stopScan() else ble.startScan()
+                                                }
+                                            ) {
                                                 Text(if (state.scanning) "Stop scan" else "Scan watches")
                                             }
                                         }
+
                                         Button(onClick = {
                                             audioRouter.useDeviceAudio()
                                             selectedRoute = "Device audio"
                                         }) { Text("Use device audio") }
-                                        Button(onClick = { routes = audioRouter.availableRoutes() }) { Text("Refresh audio routes") }
+
+                                        Button(onClick = {
+                                            routes = audioRouter.availableRoutes()
+                                        }) { Text("Refresh audio routes") }
+
+                                        Button(onClick = {
+                                            jarvisVolume = audioRouter.setJarvisVolume(100)
+                                        }) { Text("JARVIS volume: $jarvisVolume% (Max)") }
+
                                         routes.filter { it.id >= 0 }.forEach { route ->
                                             TextButton(onClick = {
-                                                if (audioRouter.useRoute(route.id)) selectedRoute = route.name
+                                                if (audioRouter.useRoute(route.id)) {
+                                                    selectedRoute = route.name
+                                                }
                                             }) { Text("Use ${route.name}") }
                                         }
-                                        Button(onClick = { alertPulse = true }) { Text("Preview JARVIS alert") }
+
+                                        Button(onClick = {
+                                            val enabled = !moodEngine.isAdaptiveEnabled()
+                                            moodEngine.setAdaptiveEnabled(enabled)
+                                            adaptiveMoodLabel = if (enabled) "Neutral" else "Off"
+                                        }) {
+                                            Text(
+                                                if (moodEngine.isAdaptiveEnabled()) {
+                                                    "Disable mood adaptation"
+                                                } else {
+                                                    "Enable mood adaptation"
+                                                }
+                                            )
+                                        }
+
+                                        Button(onClick = {
+                                            moodEngine.resetLearning()
+                                            adaptiveMoodLabel = if (moodEngine.isAdaptiveEnabled()) "Neutral" else "Off"
+                                        }) { Text("Reset mood learning") }
+
+                                        Button(onClick = { alertPulse = true }) {
+                                            Text("Preview JARVIS alert")
+                                        }
                                     }
                                 }
                             }
+
                             items(state.devices) { d ->
-                                ElevatedCard(onClick = { ble.connect(d.address) }, colors = CardDefaults.elevatedCardColors(containerColor = JarvisPanel)) {
+                                ElevatedCard(
+                                    onClick = {
+                                        if (deviceRole == "primary") ble.connect(d.address)
+                                    },
+                                    colors = CardDefaults.elevatedCardColors(containerColor = JarvisPanel)
+                                ) {
                                     Column(Modifier.padding(14.dp)) {
-                                        Text(d.name, fontWeight = FontWeight.SemiBold)
-                                        Text(d.address, color = JarvisMuted, style = MaterialTheme.typography.bodySmall)
+                                        Text(
+                                            if (d.jarvisTarget) "${d.name} — JARVIS TARGET" else d.name,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            d.address,
+                                            color = JarvisMuted,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
                                     }
                                 }
                             }
@@ -332,9 +588,18 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun StatusTile(label: String, value: String, modifier: Modifier = Modifier) {
-        Card(modifier, colors = CardDefaults.cardColors(containerColor = JarvisPanel), shape = RoundedCornerShape(18.dp)) {
+        Card(
+            modifier,
+            colors = CardDefaults.cardColors(containerColor = JarvisPanel),
+            shape = RoundedCornerShape(18.dp)
+        ) {
             Column(Modifier.padding(14.dp)) {
-                Text(label, color = JarvisBlue, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    label,
+                    color = JarvisBlue,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
                 Spacer(Modifier.height(4.dp))
                 Text(value, color = JarvisText, style = MaterialTheme.typography.bodyMedium)
             }
@@ -359,7 +624,10 @@ class MainActivity : ComponentActivity() {
                             prefs.edit().putString("last_message_id", latest.id).apply()
                         } else if (lastSeen != latest.id) {
                             val caller = latest.callerPhone ?: "Unknown caller"
-                            notifications.push("📞 JARVIS call message", "$caller — ${latest.summary}")
+                            notifications.push(
+                                "📞 JARVIS call message",
+                                "$caller — ${latest.summary}"
+                            )
                             prefs.edit().putString("last_message_id", latest.id).apply()
                         }
                     }
