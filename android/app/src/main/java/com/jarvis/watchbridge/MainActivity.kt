@@ -2,6 +2,7 @@ package com.jarvis.watchbridge
 
 import android.Manifest
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -54,6 +55,27 @@ class MainActivity : ComponentActivity() {
     private lateinit var audioRouter: AudioRouter
     private lateinit var speech: SpeechOutput
     private val phoneMessages = PhoneMessageRepository()
+
+    private fun requiredBlePermissions(): Array<String> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        arrayOf(
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_CONNECT
+        )
+    } else {
+        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+
+    private fun allOptionalPermissions(): Array<String> {
+        val permissions = mutableListOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.ACTIVITY_RECOGNITION
+        )
+        permissions += requiredBlePermissions()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions += Manifest.permission.POST_NOTIFICATIONS
+        }
+        return permissions.distinct().toTypedArray()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -108,8 +130,47 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
-                val healthLauncher = rememberLauncherForActivityResult(PermissionController.createRequestPermissionResultContract()) { }
+                val blePermissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestMultiplePermissions()
+                ) { result ->
+                    val granted = requiredBlePermissions().all { permission ->
+                        result[permission] == true || ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            permission
+                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    }
+                    if (granted) ble.connectTargetWatch()
+                }
+
+                val permissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestMultiplePermissions()
+                ) { result ->
+                    val bleGranted = requiredBlePermissions().all { permission ->
+                        result[permission] == true || ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            permission
+                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    }
+                    if (bleGranted) ble.connectTargetWatch()
+                }
+
+                val healthLauncher = rememberLauncherForActivityResult(
+                    PermissionController.createRequestPermissionResultContract()
+                ) { }
+
+                LaunchedEffect(Unit) {
+                    val granted = requiredBlePermissions().all { permission ->
+                        ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            permission
+                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    }
+                    if (granted) {
+                        ble.connectTargetWatch()
+                    } else {
+                        blePermissionLauncher.launch(requiredBlePermissions())
+                    }
+                }
 
                 Surface(Modifier.fillMaxSize(), color = Color(0xFF070B12)) {
                     LazyColumn(
@@ -154,9 +215,30 @@ class MainActivity : ComponentActivity() {
                         }
 
                         item {
+                            val watchStatus = when {
+                                state.connectedName != null -> state.connectedName!!
+                                state.connectingAddress != null -> "Connecting…"
+                                state.scanning -> "Scanning…"
+                                else -> "Not connected"
+                            }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                StatusTile("WATCH", state.connectedName ?: "Not connected", Modifier.weight(1f))
+                                StatusTile("WATCH", watchStatus, Modifier.weight(1f))
                                 StatusTile("AUDIO", selectedRoute, Modifier.weight(1f))
+                            }
+                        }
+
+                        item {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Button(
+                                    onClick = { ble.connectTargetWatch() },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(16.dp)
+                                ) { Text("Reconnect watch") }
+                                Button(
+                                    onClick = { if (state.scanning) ble.stopScan() else ble.startScan() },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(16.dp)
+                                ) { Text(if (state.scanning) "Stop scan" else "Scan watches") }
                             }
                         }
 
@@ -188,7 +270,11 @@ class MainActivity : ComponentActivity() {
                                                 listening = false
                                                 busy = true
                                                 lifecycleScope.launch {
-                                                    reply = try { chat.send(msg, healthText) } catch (e: Exception) { "I hit a connection problem: ${e.message ?: "unknown error"}" }
+                                                    reply = try {
+                                                        chat.send(msg, healthText)
+                                                    } catch (e: Exception) {
+                                                        "I hit a connection problem: ${e.message ?: "unknown error"}"
+                                                    }
                                                     busy = false
                                                     notifications.push("JARVIS", reply)
                                                     speech.speak(reply)
@@ -231,6 +317,7 @@ class MainActivity : ComponentActivity() {
                                     Text(state.heartRateBpm?.let { "Heart rate: $it bpm" } ?: "Heart rate: waiting for watch", color = JarvisMuted)
                                     Text("Phone receptionist: active while JARVIS is running", color = JarvisMuted)
                                     Text("Wake service: ${if (alwaysListening) "active" else "off"}", color = JarvisMuted)
+                                    state.connectedAddress?.let { Text("Watch BLE: $it", color = JarvisMuted) }
                                     state.error?.let { Text("Watch: $it", color = MaterialTheme.colorScheme.error) }
                                 }
                             }
@@ -260,7 +347,9 @@ class MainActivity : ComponentActivity() {
                                                 lifecycleScope.launch {
                                                     healthText = try {
                                                         if (health.hasPermissions()) health.snapshot() else "Grant Health Connect permissions first"
-                                                    } catch (e: Exception) { "Health unavailable: ${e.message}" }
+                                                    } catch (e: Exception) {
+                                                        "Health unavailable: ${e.message}"
+                                                    }
                                                 }
                                             }) { Text("Refresh") }
                                         }
@@ -288,17 +377,11 @@ class MainActivity : ComponentActivity() {
                                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                         Text("Watch & permissions", style = MaterialTheme.typography.titleMedium)
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            Button(onClick = {
-                                                permissionLauncher.launch(arrayOf(
-                                                    Manifest.permission.RECORD_AUDIO,
-                                                    Manifest.permission.BLUETOOTH_SCAN,
-                                                    Manifest.permission.BLUETOOTH_CONNECT,
-                                                    Manifest.permission.POST_NOTIFICATIONS,
-                                                    Manifest.permission.ACTIVITY_RECOGNITION
-                                                ))
-                                            }) { Text("Permissions") }
-                                            Button(onClick = { if (state.scanning) ble.stopScan() else ble.startScan() }) {
-                                                Text(if (state.scanning) "Stop scan" else "Scan watches")
+                                            Button(onClick = { permissionLauncher.launch(allOptionalPermissions()) }) {
+                                                Text("Permissions")
+                                            }
+                                            Button(onClick = { ble.connectTargetWatch() }) {
+                                                Text("Connect target")
                                             }
                                         }
                                         Button(onClick = {
@@ -316,9 +399,15 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                             items(state.devices) { d ->
-                                ElevatedCard(onClick = { ble.connect(d.address) }, colors = CardDefaults.elevatedCardColors(containerColor = JarvisPanel)) {
+                                ElevatedCard(
+                                    onClick = { ble.connect(d.address) },
+                                    colors = CardDefaults.elevatedCardColors(containerColor = JarvisPanel)
+                                ) {
                                     Column(Modifier.padding(14.dp)) {
-                                        Text(d.name, fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            if (d.jarvisTarget) "${d.name} — JARVIS TARGET" else d.name,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
                                         Text(d.address, color = JarvisMuted, style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
@@ -342,6 +431,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        ble.disconnect()
         speech.shutdown()
         audioRouter.clearRoute()
         super.onDestroy()
