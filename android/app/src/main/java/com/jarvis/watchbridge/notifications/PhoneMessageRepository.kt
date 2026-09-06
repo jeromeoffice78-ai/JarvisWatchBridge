@@ -31,7 +31,7 @@ class PhoneMessageRepository {
         if (!base.startsWith("https://")) return null
 
         val request = Request.Builder()
-            .url("$base/phone/messages")
+            .url("$base/_api/phone/messages")
             .addHeader("x-jarvis-admin-token", token)
             .addHeader("Accept", "application/json")
             .get()
