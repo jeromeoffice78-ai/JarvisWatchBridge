@@ -25,7 +25,7 @@ class ChatRepository {
         }.toString().toRequestBody(json)
 
         val builder = Request.Builder()
-            .url(BuildConfig.API_BASE_URL.trimEnd('/') + "/chat")
+            .url(BuildConfig.API_BASE_URL.trimEnd('/') + "/_api/chat")
             .addHeader("Accept", "application/json")
             .post(body)
 
