@@ -115,11 +115,7 @@ class JarvisRemoteCommandService : Service() {
             "open_settings" -> openSettings(payload.optString("screen"))
             "ui_tap_text" -> JarvisAccessibilityService.tapText(payload.optString("text"))
             "ui_type_text" -> JarvisAccessibilityService.typeText(payload.optString("text"))
-            "ui_scroll" -> if (payload.optString("direction").equals("backward", true)) {
-                JarvisAccessibilityService.scrollBackward()
-            } else {
-                JarvisAccessibilityService.scrollForward()
-            }
+            "ui_scroll" -> if (payload.optString("direction").equals("backward", true)) JarvisAccessibilityService.scrollBackward() else JarvisAccessibilityService.scrollForward()
             "compose_sms" -> composeSms(payload)
             "compose_email" -> composeEmail(payload)
             "dial_number" -> dial(payload.optString("number"))
@@ -136,8 +132,7 @@ class JarvisRemoteCommandService : Service() {
 
     private fun openApp(packageName: String): ActionResult {
         if (packageName.isBlank()) return ActionResult(false, "Package name required.")
-        val intent = packageManager.getLaunchIntentForPackage(packageName)
-            ?: return ActionResult(false, "App is not installed or has no launch activity.")
+        val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return ActionResult(false, "App is not installed or has no launch activity.")
         startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         return ActionResult(true, "App opened.")
     }
@@ -153,21 +148,15 @@ class JarvisRemoteCommandService : Service() {
         val audio = getSystemService(AudioManager::class.java)
         val safe = percent.coerceIn(0, 100)
         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val volume = ((safe / 100.0) * max).toInt().coerceIn(0, max)
-        audio.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0)
+        audio.setStreamVolume(AudioManager.STREAM_MUSIC, ((safe / 100.0) * max).toInt().coerceIn(0, max), 0)
         return ActionResult(true, "Media volume set to $safe%.")
     }
 
     private fun setFlashlight(enabled: Boolean): ActionResult {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            return ActionResult(false, "Camera permission is required for flashlight control.")
-        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return ActionResult(false, "Camera permission is required for flashlight control.")
         val manager = getSystemService(CameraManager::class.java)
         val cameraId = manager.cameraIdList.firstOrNull { id ->
-            runCatching {
-                manager.getCameraCharacteristics(id)
-                    .get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-            }.getOrDefault(false)
+            runCatching { manager.getCameraCharacteristics(id).get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true }.getOrDefault(false)
         } ?: return ActionResult(false, "No controllable flashlight found.")
         return runCatching {
             manager.setTorchMode(cameraId, enabled)
@@ -201,20 +190,14 @@ class JarvisRemoteCommandService : Service() {
     }
 
     private fun composeSms(payload: JSONObject): ActionResult {
-        val number = payload.optString("number")
-        val body = payload.optString("body")
-        val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${Uri.encode(number)}"))
-            .putExtra("sms_body", body)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        startActivity(intent)
+        startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${Uri.encode(payload.optString("number"))}"))
+            .putExtra("sms_body", payload.optString("body"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         return ActionResult(true, "SMS draft opened.")
     }
 
     private fun composeEmail(payload: JSONObject): ActionResult {
-        val to = payload.optString("to")
-        val subject = payload.optString("subject")
-        val body = payload.optString("body")
-        val uri = Uri.parse("mailto:${Uri.encode(to)}?subject=${Uri.encode(subject)}&body=${Uri.encode(body)}")
+        val uri = Uri.parse("mailto:${Uri.encode(payload.optString("to"))}?subject=${Uri.encode(payload.optString("subject"))}&body=${Uri.encode(payload.optString("body"))}")
         startActivity(Intent(Intent.ACTION_SENDTO, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         return ActionResult(true, "Email draft opened.")
     }
@@ -229,25 +212,21 @@ class JarvisRemoteCommandService : Service() {
         val hour = payload.optInt("hour", -1)
         val minute = payload.optInt("minute", -1)
         if (hour !in 0..23 || minute !in 0..59) return ActionResult(false, "Valid hour and minute required.")
-        startActivity(
-            Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
-                .putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
-                .putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
-                .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, false)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
+        startActivity(Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
+            .putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
+            .putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
+            .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, false)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         return ActionResult(true, "Alarm setup opened.")
     }
 
     private fun setTimer(payload: JSONObject): ActionResult {
         val seconds = payload.optInt("seconds", 0)
         if (seconds <= 0) return ActionResult(false, "Positive timer duration required.")
-        startActivity(
-            Intent(android.provider.AlarmClock.ACTION_SET_TIMER)
-                .putExtra(android.provider.AlarmClock.EXTRA_LENGTH, seconds)
-                .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, false)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
+        startActivity(Intent(android.provider.AlarmClock.ACTION_SET_TIMER)
+            .putExtra(android.provider.AlarmClock.EXTRA_LENGTH, seconds)
+            .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, false)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         return ActionResult(true, "Timer setup opened.")
     }
 
@@ -260,11 +239,9 @@ class JarvisRemoteCommandService : Service() {
             put("status", if (result.success) "succeeded" else "failed")
             put("result", JSONObject().put("message", result.message))
         }
-        val req = Request.Builder()
-            .url("$base/device/result")
+        val req = Request.Builder().url("$base/device/result")
             .addHeader("x-jarvis-admin-token", token)
-            .post(body.toString().toRequestBody(json))
-            .build()
+            .post(body.toString().toRequestBody(json)).build()
         runCatching { client.newCall(req).execute().close() }
     }
 
@@ -275,9 +252,16 @@ class JarvisRemoteCommandService : Service() {
     }
 
     companion object {
-        fun start(context: Context) {
-            ContextCompat.startForegroundService(context, Intent(context, JarvisRemoteCommandService::class.java))
+        fun start(context: Context): ActionResult {
+            val bluetoothAllowed = ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+            if (!bluetoothAllowed) return ActionResult(false, "Grant Bluetooth permissions before enabling JARVIS Remote Control.")
+            return runCatching {
+                ContextCompat.startForegroundService(context, Intent(context, JarvisRemoteCommandService::class.java))
+                ActionResult(true, "JARVIS Remote Control enabled.")
+            }.getOrElse { ActionResult(false, it.message ?: "Unable to start JARVIS Remote Control.") }
         }
+
         fun stop(context: Context) {
             context.stopService(Intent(context, JarvisRemoteCommandService::class.java))
         }
