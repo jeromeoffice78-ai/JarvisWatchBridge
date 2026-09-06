@@ -8,8 +8,10 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from openai import OpenAI
+from team import router as team_router
 
 app = FastAPI(title="JARVIS Watch Bridge API", version="0.6.0")
+app.include_router(team_router)
 VAPI_BASE = "https://api.vapi.ai"
 JARVIS_PHONE_NUMBER = "+15318679252"
 JARVIS_ASSISTANT_NAMES = ("JARVIS Phone Receptionist v2", "JARVIS Phone Receptionist")
