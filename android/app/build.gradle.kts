@@ -13,13 +13,13 @@ android {
         // as an update to older test APKs signed by different ephemeral keys.
         applicationId = "com.jarvis.chairman"
         minSdk = 28
-        targetSdk = 35
-        versionCode = 220
-        versionName = "2.2.0"
+        targetSdk = 36
+        versionCode = 231
+        versionName = "2.3.1"
 
         val apiBaseUrl = System.getenv("JARVIS_API_BASE_URL")
             ?.takeIf { it.isNotBlank() }
-            ?: "https://jarvis-watch-bridge-api.onrender.com/"
+            ?: "https://jarvis-native-watch-bridge.floot.app/"
         val setupToken = System.getenv("JARVIS_SETUP_TOKEN")
             ?.takeIf { it.isNotBlank() }
             ?: ""
