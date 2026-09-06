@@ -14,8 +14,8 @@ android {
         applicationId = "com.jarvis.chairman"
         minSdk = 28
         targetSdk = 36
-        versionCode = 231
-        versionName = "2.3.1"
+        versionCode = 232
+        versionName = "2.3.2"
 
         val apiBaseUrl = System.getenv("JARVIS_API_BASE_URL")
             ?.takeIf { it.isNotBlank() }
