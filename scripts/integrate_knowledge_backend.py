@@ -15,12 +15,26 @@ def patch() -> bool:
             raise RuntimeError("team router import anchor not found")
         text = text.replace(anchor, anchor + import_line, 1)
 
+    crawler_import = "from crawler import router as crawler_router\n"
+    if crawler_import not in text:
+        anchor = import_line
+        if anchor not in text:
+            raise RuntimeError("knowledge import anchor not found")
+        text = text.replace(anchor, anchor + crawler_import, 1)
+
     include_line = "app.include_router(knowledge_router)\n"
     if include_line not in text:
         anchor = "app.include_router(team_router)\n"
         if anchor not in text:
             raise RuntimeError("team router include anchor not found")
         text = text.replace(anchor, anchor + include_line, 1)
+
+    crawler_include = "app.include_router(crawler_router)\n"
+    if crawler_include not in text:
+        anchor = include_line
+        if anchor not in text:
+            raise RuntimeError("knowledge router include anchor not found")
+        text = text.replace(anchor, anchor + crawler_include, 1)
 
     old_context = '    context = req.health_context or "No health context supplied."\n'
     new_context = (
