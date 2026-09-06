@@ -26,8 +26,8 @@ class ChatRepository {
         require(message.isNotBlank()) { "Message cannot be blank" }
 
         val body = JSONObject().apply {
-            put("message", message.take(12_000))
-            if (!healthContext.isNullOrBlank()) put("health_context", healthContext.take(12_000))
+            put("message", message.take(4_000))
+            if (!healthContext.isNullOrBlank()) put("health_context", healthContext.take(8_000))
         }.toString().toRequestBody(json)
 
         val request = Request.Builder()
