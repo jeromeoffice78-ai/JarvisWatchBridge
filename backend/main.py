@@ -6,8 +6,10 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from openai import OpenAI
 
-app = FastAPI(title="JARVIS Watch Bridge API", version="0.3.0")
+app = FastAPI(title="JARVIS Watch Bridge API", version="0.4.0")
 VAPI_BASE = "https://api.vapi.ai"
+JARVIS_PHONE_NUMBER = "+15318679252"
+JARVIS_ASSISTANT_NAMES = ("JARVIS Phone Receptionist v2", "JARVIS Phone Receptionist")
 
 
 class ChatRequest(BaseModel):
@@ -20,7 +22,7 @@ class ChatResponse(BaseModel):
 
 
 class PhoneSetupRequest(BaseModel):
-    area_code: str = Field(default="404", pattern=r"^\d{3}$")
+    area_code: str = Field(default="531", pattern=r"^\d{3}$")
 
 
 def _vapi_key() -> str:
@@ -53,9 +55,71 @@ async def _vapi(method: str, path: str, payload: dict[str, Any] | None = None) -
     return response.json()
 
 
+async def _find_or_create_assistant() -> dict[str, Any]:
+    assistants = await _vapi("GET", "/assistant")
+    assistant = next(
+        (item for name in JARVIS_ASSISTANT_NAMES for item in assistants if item.get("name") == name),
+        None,
+    )
+    if assistant:
+        return assistant
+
+    return await _vapi(
+        "POST",
+        "/assistant",
+        {
+            "name": "JARVIS Phone Receptionist v2",
+            "firstMessage": "Hello, you have reached Jerome's JARVIS AI assistant. I can take a message for him. May I have your name?",
+            "maxDurationSeconds": 300,
+            "model": {
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "messages": [{
+                    "role": "system",
+                    "content": (
+                        "You are JARVIS, Jerome's AI receptionist. Clearly identify yourself as an AI assistant. "
+                        "Ask for the caller's name, callback number, concise reason for calling, and whether it is urgent. "
+                        "Read the message back for confirmation, say Jerome will receive it, then end politely. "
+                        "Never request passwords, payment card data, government ID numbers, or unnecessary sensitive information."
+                    ),
+                }],
+            },
+        },
+    )
+
+
+async def _bind_existing_phone() -> dict[str, Any] | None:
+    assistant = await _find_or_create_assistant()
+    numbers = await _vapi("GET", "/phone-number")
+    phone = next(
+        (
+            item for item in numbers
+            if str(item.get("number", "")).replace(" ", "").replace("-", "").replace("(", "").replace(")", "") == JARVIS_PHONE_NUMBER
+        ),
+        None,
+    )
+    if not phone:
+        phone = next((item for item in numbers if item.get("name") == "JARVIS Free Line"), None)
+    if not phone:
+        return None
+    if phone.get("assistantId") != assistant["id"]:
+        phone = await _vapi("PATCH", f"/phone-number/{phone['id']}", {"assistantId": assistant["id"], "name": "JARVIS Free Line"})
+    return {"assistant": assistant, "phone": phone}
+
+
+@app.on_event("startup")
+async def auto_configure_vapi() -> None:
+    if not os.getenv("VAPI_API_KEY", "").strip():
+        return
+    try:
+        await _bind_existing_phone()
+    except Exception as exc:
+        print(f"JARVIS Vapi auto-bind warning: {exc}")
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "jarvis-watch-bridge", "version": "0.3.0"}
+    return {"status": "ok", "service": "jarvis-watch-bridge", "version": "0.4.0"}
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -91,34 +155,18 @@ async def setup_phone(
 ) -> dict[str, Any]:
     _require_admin(x_jarvis_admin_token)
 
-    assistants = await _vapi("GET", "/assistant")
-    assistant = next((item for item in assistants if item.get("name") == "JARVIS Phone Receptionist"), None)
-    if not assistant:
-        assistant = await _vapi(
-            "POST",
-            "/assistant",
-            {
-                "name": "JARVIS Phone Receptionist",
-                "firstMessage": "Hello, you have reached Jerome's JARVIS AI assistant. I can take a message for him. May I have your name?",
-                "maxDurationSeconds": 300,
-                "model": {
-                    "provider": "openai",
-                    "model": "gpt-4o-mini",
-                    "messages": [{
-                        "role": "system",
-                        "content": (
-                            "You are JARVIS, Jerome's AI receptionist. Clearly identify yourself as an AI assistant. "
-                            "Ask for the caller's name, callback number, concise reason for calling, and whether it is urgent. "
-                            "Read the message back for confirmation, say Jerome will receive it, then end politely. "
-                            "Never request passwords, payment card data, government ID numbers, or unnecessary sensitive information."
-                        ),
-                    }],
-                },
-            },
-        )
-
+    assistant = await _find_or_create_assistant()
     numbers = await _vapi("GET", "/phone-number")
-    phone = next((item for item in numbers if item.get("name") == "JARVIS Free Line"), None)
+    phone = next(
+        (
+            item for item in numbers
+            if str(item.get("number", "")).replace(" ", "").replace("-", "").replace("(", "").replace(")", "") == JARVIS_PHONE_NUMBER
+        ),
+        None,
+    )
+    if not phone:
+        phone = next((item for item in numbers if item.get("name") == "JARVIS Free Line"), None)
+
     tried: list[str] = []
     if not phone:
         for area_code in dict.fromkeys([req.area_code, "531", "516", "208"]):
@@ -136,12 +184,13 @@ async def setup_phone(
                     raise
         if not phone:
             raise HTTPException(status_code=409, detail={"message": "No requested free number is currently available", "tried": tried})
-    elif phone.get("assistantId") != assistant["id"]:
-        phone = await _vapi("PATCH", f"/phone-number/{phone['id']}", {"assistantId": assistant["id"]})
+    elif phone.get("assistantId") != assistant["id"] or phone.get("name") != "JARVIS Free Line":
+        phone = await _vapi("PATCH", f"/phone-number/{phone['id']}", {"assistantId": assistant["id"], "name": "JARVIS Free Line"})
 
     return {
         "active": True,
         "assistantId": assistant["id"],
+        "assistantName": assistant.get("name"),
         "phoneNumberId": phone.get("id"),
         "phoneNumber": phone.get("number"),
         "triedAreaCodes": tried,
