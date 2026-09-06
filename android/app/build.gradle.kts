@@ -9,12 +9,11 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        // Stable Chairman package ID for production installs and future updates.
         applicationId = "com.jarvis.chairman"
         minSdk = 28
         targetSdk = 36
-        versionCode = 230
-        versionName = "2.3.0"
+        versionCode = 250
+        versionName = "2.5.0"
 
         val apiBaseUrl = System.getenv("JARVIS_API_BASE_URL")
             ?.takeIf { it.isNotBlank() }
@@ -60,8 +59,6 @@ android {
         }
         getByName("release") {
             isDebuggable = false
-            // Preserve all current runtime capabilities while production hardening is validated.
-            // R8/resource shrinking can be enabled later after device regression tests.
             isMinifyEnabled = false
             isShrinkResources = false
             if (releaseSigningReady) {
