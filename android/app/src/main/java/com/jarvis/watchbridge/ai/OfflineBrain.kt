@@ -10,11 +10,13 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Optional fully on-device generation engine.
+ * Optional, fully on-device LLM runtime.
  *
- * A model is deliberately not bundled in the APK because mobile LLM model files are hundreds of
- * megabytes and may have separate license terms. The user can import a compatible MediaPipe .task
- * model once; after that, inference is completely offline.
+ * The model is deliberately not bundled into the APK because production-quality LLM model files
+ * are large and hardware-specific. The Chairman can import a compatible MediaPipe .task model;
+ * JARVIS copies it into app-private storage and can then answer without any network connection.
+ * If no compatible model is installed or the device cannot initialize it, HybridBrain falls back
+ * to the durable local knowledge vault rather than failing the conversation.
  */
 class OfflineBrain(
     private val context: Context,
@@ -23,74 +25,79 @@ class OfflineBrain(
     data class Status(
         val installed: Boolean,
         val compatible: Boolean,
-        val modelSizeBytes: Long,
+        val modelBytes: Long,
         val message: String
     )
 
-    private val modelDir = File(context.filesDir, "models")
-    private val modelFile = File(modelDir, MODEL_FILE_NAME)
-    @Volatile private var engine: LlmInference? = null
+    private val modelFile = File(context.filesDir, MODEL_FILE_NAME)
     private val engineLock = Any()
+    @Volatile private var engine: LlmInference? = null
 
     fun status(): Status {
-        val installed = modelFile.exists() && modelFile.length() >= MIN_MODEL_BYTES
-        val totalRam = ActivityManager.MemoryInfo().also {
-            context.getSystemService(ActivityManager::class.java).getMemoryInfo(it)
-        }.totalMem
-        val compatible = totalRam >= MIN_TOTAL_RAM_BYTES
+        val activityManager = context.getSystemService(ActivityManager::class.java)
+        val info = ActivityManager.MemoryInfo().also(activityManager::getMemoryInfo)
+        val compatible = info.totalMem >= MIN_TOTAL_RAM_BYTES
+        val bytes = if (modelFile.exists()) modelFile.length() else 0L
+        val installed = bytes >= MIN_MODEL_BYTES
         val message = when {
-            !installed -> "Offline knowledge memory is active. Import a compatible .task model for full offline generation."
-            !compatible -> "Offline model is installed, but this device may not have enough RAM for reliable generation. Memory-only offline mode remains available."
-            else -> "Full offline JARVIS generation is ready."
+            !compatible -> "Device does not have enough RAM for the optional local LLM; offline memory remains available."
+            !installed -> "Offline knowledge is ready. Import a compatible local .task model to enable offline generative AI."
+            else -> "Offline local AI model ready."
         }
-        return Status(installed, compatible, if (modelFile.exists()) modelFile.length() else 0L, message)
+        return Status(installed, compatible, bytes, message)
     }
 
     suspend fun installModel(uri: Uri): Status = withContext(Dispatchers.IO) {
-        modelDir.mkdirs()
-        val temp = File(modelDir, "$MODEL_FILE_NAME.partial")
-        runCatching {
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                temp.outputStream().buffered().use { output -> input.copyTo(output, DEFAULT_BUFFER_SIZE * 8) }
-            } ?: error("Could not open selected model")
-            require(temp.length() >= MIN_MODEL_BYTES) { "Selected file is too small to be a supported local LLM model" }
-            shutdown()
-            if (modelFile.exists() && !modelFile.delete()) error("Could not replace previous offline model")
-            if (!temp.renameTo(modelFile)) {
-                temp.copyTo(modelFile, overwrite = true)
-                temp.delete()
-            }
-        }.getOrElse {
+        shutdown()
+        val temp = File(context.cacheDir, "jarvis-offline-import.tmp")
+        context.contentResolver.openInputStream(uri).use { input ->
+            requireNotNull(input) { "Unable to open selected model" }
+            temp.outputStream().use { output -> input.copyTo(output, 1024 * 1024) }
+        }
+        require(temp.length() >= MIN_MODEL_BYTES) {
+            "Selected file is too small to be a supported JARVIS local LLM model."
+        }
+        if (modelFile.exists() && !modelFile.delete()) {
             temp.delete()
-            throw it
+            error("Unable to replace the existing offline model")
+        }
+        if (!temp.renameTo(modelFile)) {
+            temp.copyTo(modelFile, overwrite = true)
+            temp.delete()
         }
         status()
     }
 
-    suspend fun generate(userMessage: String, extraContext: String = ""): String? = withContext(Dispatchers.Default) {
-        val current = status()
-        if (!current.installed || !current.compatible) return@withContext null
+    suspend fun generate(message: String, deviceContext: String = ""): String? = withContext(Dispatchers.IO) {
+        val status = status()
+        if (!status.installed || !status.compatible) return@withContext null
 
-        val memoryContext = memory.contextFor(userMessage, limit = 7, maxChars = 6500)
+        val memoryContext = memory.contextFor(message, limit = 5, maxChars = 4200)
         val prompt = buildString {
-            append("You are JARVIS running entirely offline on the user's Android device. ")
-            append("Be accurate, concise, and candid when local memory does not contain enough information. ")
-            append("Never claim to have searched the internet while offline.\n\n")
-            if (memoryContext.isNotBlank()) append(memoryContext).append("\n\n")
-            if (extraContext.isNotBlank()) append("CURRENT DEVICE CONTEXT:\n").append(extraContext.take(2500)).append("\n\n")
-            append("USER:\n").append(userMessage.take(4000)).append("\n\nJARVIS:")
+            append("You are JARVIS running completely offline on the Chairman's Android device. ")
+            append("Be concise, practical, and explicit when information may be stale because there is no internet. ")
+            append("Never claim that you checked a live source while offline.\n\n")
+            if (deviceContext.isNotBlank()) {
+                append("DEVICE CONTEXT:\n").append(deviceContext.take(2200)).append("\n\n")
+            }
+            if (memoryContext.isNotBlank()) {
+                append(memoryContext).append("\n\n")
+            }
+            append("CHAIRMAN:\n").append(message.take(6000)).append("\n\nJARVIS:\n")
         }
 
-        runCatching {
-            val llm = getOrCreateEngine()
-            llm.generateResponse(prompt).trim().takeIf { it.isNotBlank() }
-        }.getOrNull()
+        try {
+            getOrCreateEngine().generateResponse(prompt).trim().takeIf { it.isNotBlank() }
+        } catch (_: Throwable) {
+            shutdown()
+            null
+        }
     }
 
-    fun memoryOnlyAnswer(userMessage: String): String {
-        val records = memory.search(userMessage, limit = 5)
+    fun memoryOnlyAnswer(message: String): String {
+        val records = memory.search(message, limit = 5)
         if (records.isEmpty()) {
-            return "I'm offline. I can still use device controls and local functions, but I don't have enough saved knowledge about that yet. Connect once so I can research and remember it, or import an offline model."
+            return "I'm offline and I don't have enough stored knowledge for that yet. Connect to the internet so I can answer and retain useful knowledge for later."
         }
         val body = records.joinToString("\n") { record ->
             val source = record.sourceUrl?.let { " ($it)" }.orEmpty()
@@ -114,7 +121,6 @@ class OfflineBrain(
                 .setModelPath(modelFile.absolutePath)
                 .setMaxTokens(1024)
                 .setMaxTopK(40)
-                .setTemperature(0.35f)
                 .build()
             return LlmInference.createFromOptions(context.applicationContext, options).also { engine = it }
         }
