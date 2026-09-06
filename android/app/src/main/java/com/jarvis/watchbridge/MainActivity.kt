@@ -39,6 +39,7 @@ import com.jarvis.watchbridge.security.DeviceSecurityScanner
 import com.jarvis.watchbridge.ui.JarvisPortrait
 import com.jarvis.watchbridge.ui.JarvisVisualState
 import com.jarvis.watchbridge.ui.ExpertTeamPanel
+import com.jarvis.watchbridge.ui.KnowledgeControlPanel
 import com.jarvis.watchbridge.voice.AlwaysListeningService
 import com.jarvis.watchbridge.voice.SpeechOutput
 import kotlinx.coroutines.Dispatchers
@@ -260,6 +261,10 @@ class MainActivity : ComponentActivity() {
 
                         item {
                             ExpertTeamPanel()
+                        }
+
+                        item {
+                            KnowledgeControlPanel()
                         }
 
                         item {
