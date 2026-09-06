@@ -6,6 +6,7 @@ on:
     branches: [production-hardening-v2.3.0]
     paths:
       - 'backend/knowledge.py'
+      - 'backend/crawler.py'
       - 'scripts/integrate_knowledge_backend.py'
       - '.github/workflows/integrate-knowledge-backend.yml'
 
@@ -22,16 +23,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Wire knowledge retrieval into chat
+      - name: Wire knowledge retrieval and crawler into backend
         run: python scripts/integrate_knowledge_backend.py
       - name: Verify backend integration
         shell: bash
         run: |
           set -euo pipefail
           grep -Fq 'app.include_router(knowledge_router)' backend/main.py
+          grep -Fq 'app.include_router(crawler_router)' backend/main.py
           grep -Fq 'retrieve_context(req.message, client)' backend/main.py
           grep -Fq 'untrusted reference material' backend/main.py
-          python -m py_compile backend/main.py backend/knowledge.py backend/team.py
+          grep -Fq 'robots.txt' backend/crawler.py
+          grep -Fq '_validate_public_url' backend/crawler.py
+          python -m py_compile backend/main.py backend/knowledge.py backend/crawler.py backend/team.py
       - name: Commit generated integration
         shell: bash
         run: |
@@ -43,5 +47,5 @@ jobs:
           git config user.name 'jarvis-production-bot'
           git config user.email 'actions@users.noreply.github.com'
           git add backend/main.py
-          git commit -m 'Wire cloud knowledge into live JARVIS chat [skip ci]'
+          git commit -m 'Wire cloud knowledge and crawler into live JARVIS [skip ci]'
           git push origin HEAD:production-hardening-v2.3.0
