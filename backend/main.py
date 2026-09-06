@@ -10,10 +10,12 @@ from pydantic import BaseModel, Field
 from openai import OpenAI
 from team import router as team_router
 from knowledge import router as knowledge_router, retrieve_context
+from crawler import router as crawler_router
 
 app = FastAPI(title="JARVIS Watch Bridge API", version="0.6.0")
 app.include_router(team_router)
 app.include_router(knowledge_router)
+app.include_router(crawler_router)
 VAPI_BASE = "https://api.vapi.ai"
 JARVIS_PHONE_NUMBER = "+15318679252"
 JARVIS_ASSISTANT_NAMES = ("JARVIS Phone Receptionist v2", "JARVIS Phone Receptionist")
