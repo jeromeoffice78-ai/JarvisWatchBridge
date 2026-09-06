@@ -1,0 +1,49 @@
+name: Integrate JARVIS Expert Team
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [production-hardening-v2.3.0]
+    paths:
+      - 'backend/team.py'
+      - 'android/app/src/main/java/com/jarvis/watchbridge/team/**'
+      - 'android/app/src/main/java/com/jarvis/watchbridge/ui/ExpertTeamPanel.kt'
+      - 'scripts/integrate_expert_team.py'
+      - '.github/workflows/integrate-expert-team.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: production-hardening-v2.3.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Wire team into backend and Android UI
+        run: python scripts/integrate_expert_team.py
+      - name: Verify integration anchors
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'from team import router as team_router' backend/main.py
+          grep -Fq 'app.include_router(team_router)' backend/main.py
+          grep -Fq 'ExpertTeamPanel()' android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+          python -m py_compile backend/main.py backend/team.py
+      - name: Commit generated integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Integration already current.'
+            exit 0
+          fi
+          git config user.name 'jarvis-production-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/main.py android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+          git commit -m 'Wire expert team into production app [skip ci]'
+          git push origin HEAD:production-hardening-v2.3.0
