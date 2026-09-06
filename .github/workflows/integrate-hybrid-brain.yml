@@ -1,0 +1,49 @@
+name: Integrate JARVIS Hybrid Brain
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [production-hardening-v2.3.0]
+    paths:
+      - 'android/app/src/main/java/com/jarvis/watchbridge/ai/HybridBrain.kt'
+      - 'android/app/src/main/java/com/jarvis/watchbridge/ai/OfflineBrain.kt'
+      - 'android/app/src/main/java/com/jarvis/watchbridge/memory/LocalKnowledgeStore.kt'
+      - 'scripts/integrate_hybrid_brain.py'
+      - '.github/workflows/integrate-hybrid-brain.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: production-hardening-v2.3.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Wire hybrid brain into live conversation
+        run: python scripts/integrate_hybrid_brain.py
+      - name: Verify live brain anchors
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'private lateinit var brain: HybridBrain' android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+          grep -Fq 'brain = HybridBrain(this)' android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+          grep -Fq 'brain.answer(msg, adaptiveContext).text' android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+          grep -Fq 'brain.shutdown()' android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+      - name: Commit generated integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Hybrid integration already current.'
+            exit 0
+          fi
+          git config user.name 'jarvis-production-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+          git commit -m 'Wire hybrid brain into live JARVIS chat [skip ci]'
+          git push origin HEAD:production-hardening-v2.3.0
