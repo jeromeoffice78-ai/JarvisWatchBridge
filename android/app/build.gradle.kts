@@ -9,13 +9,12 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        // Fresh package ID prevents Android from treating this Chairman build
-        // as an update to older test APKs signed by different ephemeral keys.
+        // Stable Chairman package ID for production installs and future updates.
         applicationId = "com.jarvis.chairman"
         minSdk = 28
-        targetSdk = 35
-        versionCode = 220
-        versionName = "2.2.0"
+        targetSdk = 36
+        versionCode = 230
+        versionName = "2.3.0"
 
         val apiBaseUrl = System.getenv("JARVIS_API_BASE_URL")
             ?.takeIf { it.isNotBlank() }
@@ -28,8 +27,58 @@ android {
         buildConfigField("String", "JARVIS_SETUP_TOKEN", "\"$setupToken\"")
     }
 
-    buildFeatures { compose = true; buildConfig = true }
-    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+    val releaseKeystorePath = System.getenv("JARVIS_RELEASE_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
+    val releaseStorePassword = System.getenv("JARVIS_RELEASE_STORE_PASSWORD")?.takeIf { it.isNotBlank() }
+    val releaseKeyAlias = System.getenv("JARVIS_RELEASE_KEY_ALIAS")?.takeIf { it.isNotBlank() }
+    val releaseKeyPassword = System.getenv("JARVIS_RELEASE_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+    val releaseSigningReady = listOf(
+        releaseKeystorePath,
+        releaseStorePassword,
+        releaseKeyAlias,
+        releaseKeyPassword,
+    ).all { !it.isNullOrBlank() }
+
+    signingConfigs {
+        create("release") {
+            if (releaseSigningReady) {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
+        getByName("release") {
+            isDebuggable = false
+            // Preserve all current runtime capabilities while production hardening is validated.
+            // R8/resource shrinking can be enabled later after device regression tests.
+            isMinifyEnabled = false
+            isShrinkResources = false
+            if (releaseSigningReady) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
     kotlinOptions { jvmTarget = "17" }
 }
 
