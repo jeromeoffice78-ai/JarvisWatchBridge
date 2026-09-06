@@ -37,6 +37,11 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install Android SDK 36
         shell: bash
         run: |
@@ -66,7 +71,23 @@ jobs:
             echo "Stable signing secrets are not configured; CI will produce an unsigned release candidate only."
           fi
 
-      - name: Compile, test and lint
+      - name: Verify source capability contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f android/app/src/main/java/com/jarvis/watchbridge/mood/MoodEngine.kt
+          test -f android/app/src/main/java/com/jarvis/watchbridge/device/DeviceRoleManager.kt
+          test -f android/app/src/main/java/com/jarvis/watchbridge/control/JarvisAccessibilityService.kt
+          test -f android/app/src/main/java/com/jarvis/watchbridge/control/JarvisRemoteCommandService.kt
+          test -f android/app/src/main/java/com/jarvis/watchbridge/security/DeviceSecurityScanner.kt
+          grep -Fq 'RecognizerIntent.ACTION_RECOGNIZE_SPEECH' android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+          grep -Fq 'connectTargetWatch' android/app/src/main/java/com/jarvis/watchbridge/ble/BleManager.kt
+          grep -Fq 'Take Over Watch Connection' android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+          grep -Fq 'Accessibility control disclosure' android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+          grep -Fq 'x-jarvis-admin-token' android/app/src/main/java/com/jarvis/watchbridge/ai/ChatRepository.kt
+          grep -Fq 'status") != "approved"' android/app/src/main/java/com/jarvis/watchbridge/control/JarvisRemoteCommandService.kt
+
+      - name: Compile, test and lint Android release
         working-directory: android
         env:
           JARVIS_API_BASE_URL: https://jarvis-watch-bridge-api.onrender.com/
@@ -91,7 +112,6 @@ jobs:
 
           AAPT="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt | sort -V | tail -1)"
           APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)"
-          APKSIGNER_DIR="$(dirname "$APKSIGNER")"
           APKANALYZER="$(find "${ANDROID_HOME}" -type f -name apkanalyzer | head -1 || true)"
 
           "$AAPT" dump badging "$APK" > /tmp/badging.txt
@@ -112,7 +132,7 @@ jobs:
             android.permission.BLUETOOTH_CONNECT \
             android.permission.POST_NOTIFICATIONS \
             android.permission.FOREGROUND_SERVICE_MICROPHONE \
-            android.permission.FOREGROUND_SERVICE_DATA_SYNC; do
+            android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE; do
             grep -Fq "$permission" /tmp/permissions.txt || {
               echo "Missing required permission: $permission" >&2
               exit 1
@@ -133,6 +153,7 @@ jobs:
 
           if [[ "${{ steps.signing.outputs.ready }}" == "true" ]]; then
             "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-Watch-Bridge-v2.5.0-FULL-RELEASE.apk
+            echo "SIGNED_PRODUCTION_RELEASE" > ../dist/SIGNING-STATUS.txt
           else
             echo "UNSIGNED_RELEASE_CANDIDATE" > ../dist/SIGNING-STATUS.txt
           fi
@@ -141,11 +162,41 @@ jobs:
                     ../dist/JARVIS-Watch-Bridge-v2.5.0-FULL-RELEASE.aab \
                     > ../dist/SHA256SUMS.txt
 
-      - name: Verify backend syntax
+      - name: Test backend device-control contract
         shell: bash
+        env:
+          JARVIS_SETUP_TOKEN: ci-test-token
         run: |
           set -euo pipefail
+          python -m pip install --disable-pip-version-check -r backend/requirements.txt >/dev/null
           python -m py_compile backend/main.py
+          python -m uvicorn backend.main:app --host 127.0.0.1 --port 8765 >/tmp/jarvis-api.log 2>&1 &
+          API_PID=$!
+          trap 'kill $API_PID || true' EXIT
+          for i in {1..30}; do
+            curl -fsS http://127.0.0.1:8765/health >/tmp/health.json && break
+            sleep 1
+          done
+          grep -Fq '"status":"ok"' /tmp/health.json
+
+          AUTH='x-jarvis-admin-token: ci-test-token'
+          curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+            -d '{"deviceId":"android-ci","deviceName":"CI Android","deviceModel":"CI","preferredRole":"primary","connected":true,"watchBleAddress":"41:42:69:41:49:D5"}' \
+            http://127.0.0.1:8765/device/register > /tmp/register.json
+          grep -Fq '"role":"primary"' /tmp/register.json
+
+          curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+            -d '{"deviceId":"android-ci","action":"volume_set","payload":{"percent":75}}' \
+            http://127.0.0.1:8765/device/command > /tmp/command.json
+          COMMAND_ID="$(python -c 'import json; print(json.load(open("/tmp/command.json"))["id"])')"
+
+          curl -fsS -H "$AUTH" 'http://127.0.0.1:8765/device/commands?deviceId=android-ci' > /tmp/commands.json
+          grep -Fq "$COMMAND_ID" /tmp/commands.json
+
+          curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+            -d "{\"commandId\":\"$COMMAND_ID\",\"deviceId\":\"android-ci\",\"status\":\"succeeded\",\"result\":{\"message\":\"CI verified\"}}" \
+            http://127.0.0.1:8765/device/result > /tmp/result.json
+          grep -Fq '"status":"succeeded"' /tmp/result.json
 
       - name: Upload verified build artifacts
         uses: actions/upload-artifact@v4
@@ -166,6 +217,7 @@ jobs:
             dist/JARVIS-Watch-Bridge-v2.5.0-FULL-RELEASE.apk \
             dist/JARVIS-Watch-Bridge-v2.5.0-FULL-RELEASE.aab \
             dist/SHA256SUMS.txt \
+            dist/SIGNING-STATUS.txt \
             --repo "$GITHUB_REPOSITORY" \
             --title "JARVIS Watch Bridge v2.5.0 Production" \
-            --notes "Full Chairman production build: AI chat, BLE watch host/reconnect, Health Connect, voice/wake service, TTS/audio routing, phone alerts, multi-device takeover, mood adaptation, visible remote device controls, and device security scanner."
+            --notes "Full Chairman production build: AI chat, BLE watch host/reconnect, Health Connect, voice/wake service, TTS/audio routing, phone alerts, multi-device takeover, mood adaptation, visible approved remote device controls, and device security inventory."
