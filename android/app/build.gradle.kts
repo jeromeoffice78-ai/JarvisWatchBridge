@@ -18,12 +18,8 @@ android {
         val apiBaseUrl = System.getenv("JARVIS_API_BASE_URL")
             ?.takeIf { it.isNotBlank() }
             ?: "https://jarvis-watch-bridge-api.onrender.com/"
-        val setupToken = System.getenv("JARVIS_SETUP_TOKEN")
-            ?.takeIf { it.isNotBlank() }
-            ?: ""
 
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
-        buildConfigField("String", "JARVIS_SETUP_TOKEN", "\"$setupToken\"")
     }
 
     val releaseKeystorePath = System.getenv("JARVIS_RELEASE_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }

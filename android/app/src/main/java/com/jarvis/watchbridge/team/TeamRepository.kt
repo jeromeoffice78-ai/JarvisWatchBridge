@@ -1,5 +1,7 @@
 package com.jarvis.watchbridge.team
 
+import com.jarvis.watchbridge.auth.AuthStore
+
 import com.jarvis.watchbridge.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -79,7 +81,7 @@ class TeamRepository {
 
     private suspend fun post(path: String, body: JSONObject): JSONObject = withContext(Dispatchers.IO) {
         val base = BuildConfig.API_BASE_URL.trim().trimEnd('/')
-        val token = BuildConfig.JARVIS_SETUP_TOKEN.trim()
+        val token = AuthStore.requireToken()
         require(base.startsWith("https://")) { "Secure JARVIS API URL required" }
         require(token.isNotBlank()) { "Chairman access token is not configured" }
 

@@ -4,17 +4,13 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Query
 from openai import OpenAI
+from auth import require_access
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
 
 def _require_admin(token: str | None) -> None:
-    expected = os.getenv("JARVIS_SETUP_TOKEN", "").strip()
-    if not expected:
-        raise HTTPException(status_code=503, detail="JARVIS_SETUP_TOKEN is not configured")
-    if not token or token != expected:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
+    require_access(token)
 
 def _config() -> tuple[str, str]:
     url = os.getenv("JARVIS_KNOWLEDGE_GATEWAY_URL", "").strip()

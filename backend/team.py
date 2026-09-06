@@ -5,6 +5,7 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Query
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
+from auth import require_access
 
 router = APIRouter(prefix="/team", tags=["expert-team"])
 
@@ -79,12 +80,7 @@ class TeamOrchestrateRequest(BaseModel):
 
 
 def _require_admin(token: str | None) -> None:
-    expected = os.getenv("JARVIS_SETUP_TOKEN", "").strip()
-    if not expected:
-        raise HTTPException(status_code=503, detail="JARVIS_SETUP_TOKEN is not configured")
-    if not token or token != expected:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
+    require_access(token)
 
 def _specialist(specialist_id: str) -> dict[str, Any]:
     specialist = SPECIALISTS.get(specialist_id)

@@ -39,6 +39,7 @@ import com.jarvis.watchbridge.security.DeviceSecurityScanner
 import com.jarvis.watchbridge.ui.JarvisPortrait
 import com.jarvis.watchbridge.ui.JarvisVisualState
 import com.jarvis.watchbridge.ui.ExpertTeamPanel
+import com.jarvis.watchbridge.ui.ChairmanAccessPanel
 import com.jarvis.watchbridge.ui.KnowledgeControlPanel
 import com.jarvis.watchbridge.voice.AlwaysListeningService
 import com.jarvis.watchbridge.voice.SpeechOutput
@@ -257,6 +258,10 @@ class MainActivity : ComponentActivity() {
                                 StatusTile("WATCH", state.connectedName ?: "Not connected", Modifier.weight(1f))
                                 StatusTile("ROLE", deviceRole.uppercase(Locale.US), Modifier.weight(1f))
                             }
+                        }
+
+                        item {
+                            ChairmanAccessPanel()
                         }
 
                         item {

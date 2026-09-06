@@ -1,5 +1,7 @@
 package com.jarvis.watchbridge.device
 
+import com.jarvis.watchbridge.auth.AuthStore
+
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
@@ -76,7 +78,7 @@ class DeviceRoleManager(private val context: Context) {
 
     private fun post(path: String, body: JSONObject): JSONObject {
         val base = BuildConfig.API_BASE_URL.trim().trimEnd('/')
-        val token = BuildConfig.JARVIS_SETUP_TOKEN.trim()
+        val token = AuthStore.requireToken()
         require(base.startsWith("https://")) { "Secure JARVIS bridge URL required" }
         require(token.isNotBlank()) { "Owner access is not configured in this build" }
         val request = Request.Builder()

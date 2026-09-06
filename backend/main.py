@@ -11,8 +11,10 @@ from openai import OpenAI
 from team import router as team_router
 from knowledge import router as knowledge_router, retrieve_context
 from crawler import router as crawler_router
+from auth import router as auth_router, require_access
 
 app = FastAPI(title="JARVIS Watch Bridge API", version="0.6.0")
+app.include_router(auth_router)
 app.include_router(team_router)
 app.include_router(knowledge_router)
 app.include_router(crawler_router)
@@ -82,12 +84,7 @@ def _vapi_key() -> str:
 
 
 def _require_admin(token: str | None) -> None:
-    expected = os.getenv("JARVIS_SETUP_TOKEN", "").strip()
-    if not expected:
-        raise HTTPException(status_code=503, detail="JARVIS_SETUP_TOKEN is not configured")
-    if not token or token != expected:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
+    require_access(token)
 
 def _public_base_url() -> str | None:
     value = (

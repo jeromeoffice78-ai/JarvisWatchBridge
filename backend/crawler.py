@@ -11,6 +11,7 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException
 from openai import OpenAI
 from pydantic import BaseModel, HttpUrl
+from auth import require_access
 
 from knowledge import _gateway
 
@@ -74,12 +75,7 @@ class HtmlExtractor(HTMLParser):
 
 
 def _require_admin(token: str | None) -> None:
-    expected = os.getenv("JARVIS_SETUP_TOKEN", "").strip()
-    if not expected:
-        raise HTTPException(status_code=503, detail="JARVIS_SETUP_TOKEN is not configured")
-    if not token or token != expected:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
+    require_access(token)
 
 def _validate_public_url(raw: str) -> str:
     parsed = urlparse(raw)

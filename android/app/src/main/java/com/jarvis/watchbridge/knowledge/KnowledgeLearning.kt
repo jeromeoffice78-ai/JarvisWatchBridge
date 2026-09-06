@@ -1,5 +1,7 @@
 package com.jarvis.watchbridge.knowledge
 
+import com.jarvis.watchbridge.auth.AuthStore
+
 import android.content.Context
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -94,7 +96,7 @@ class KnowledgeRepository {
         return "$base$path"
     }
 
-    private fun token(): String = BuildConfig.JARVIS_SETUP_TOKEN.trim().also {
+    private fun token(): String = AuthStore.requireToken().also {
         require(it.isNotBlank()) { "Chairman access token is not configured" }
     }
 }

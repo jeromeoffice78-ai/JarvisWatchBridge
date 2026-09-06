@@ -1,5 +1,7 @@
 package com.jarvis.watchbridge.control
 
+import com.jarvis.watchbridge.auth.AuthStore
+
 import android.Manifest
 import android.app.*
 import android.content.Context
@@ -70,7 +72,7 @@ class JarvisRemoteCommandService : Service() {
     private fun pollOnce() {
         val deviceId = DeviceIdentity.id(this)
         val base = BuildConfig.API_BASE_URL.trim().trimEnd('/')
-        val token = BuildConfig.JARVIS_SETUP_TOKEN.trim()
+        val token = AuthStore.requireToken()
         if (!base.startsWith("https://") || token.isBlank()) return
 
         val req = Request.Builder()
@@ -232,7 +234,7 @@ class JarvisRemoteCommandService : Service() {
 
     private fun postResult(commandId: String, deviceId: String, result: ActionResult) {
         val base = BuildConfig.API_BASE_URL.trim().trimEnd('/')
-        val token = BuildConfig.JARVIS_SETUP_TOKEN.trim()
+        val token = AuthStore.requireToken()
         val body = JSONObject().apply {
             put("commandId", commandId)
             put("deviceId", deviceId)
