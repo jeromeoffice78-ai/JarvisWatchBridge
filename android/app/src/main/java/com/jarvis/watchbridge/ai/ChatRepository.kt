@@ -22,11 +22,12 @@ class ChatRepository {
         val base = BuildConfig.API_BASE_URL.trim().trimEnd('/')
         val token = BuildConfig.JARVIS_SETUP_TOKEN.trim()
         require(base.startsWith("https://")) { "Secure JARVIS bridge URL required" }
-        require(token.isNotBlank()) { "Owner access is not configured in this build" }
+        require(token.isNotBlank()) { "Chairman access token is not configured" }
+        require(message.isNotBlank()) { "Message cannot be blank" }
 
         val body = JSONObject().apply {
-            put("message", message)
-            if (healthContext != null) put("health_context", healthContext)
+            put("message", message.take(12_000))
+            if (!healthContext.isNullOrBlank()) put("health_context", healthContext.take(12_000))
         }.toString().toRequestBody(json)
 
         val request = Request.Builder()
@@ -38,8 +39,10 @@ class ChatRepository {
 
         client.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
-            if (!response.isSuccessful) error("API ${response.code}: $text")
-            JSONObject(text).getString("reply")
+            if (!response.isSuccessful) error("JARVIS API ${response.code}: ${text.take(600)}")
+            val root = JSONObject(text)
+            root.optString("reply").takeIf { it.isNotBlank() }
+                ?: error("JARVIS API returned no reply")
         }
     }
 }
