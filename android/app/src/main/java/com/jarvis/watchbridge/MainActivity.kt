@@ -26,6 +26,7 @@ import androidx.core.content.ContextCompat
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.lifecycleScope
 import com.jarvis.watchbridge.ai.ChatRepository
+import com.jarvis.watchbridge.ai.HybridBrain
 import com.jarvis.watchbridge.audio.AudioRouter
 import com.jarvis.watchbridge.ble.BleManager
 import com.jarvis.watchbridge.control.JarvisRemoteCommandService
@@ -57,7 +58,7 @@ private val JarvisMuted = Color(0xFFA8BDD0)
 class MainActivity : ComponentActivity() {
     private lateinit var ble: BleManager
     private lateinit var health: HealthRepository
-    private val chat = ChatRepository()
+    private lateinit var brain: HybridBrain
     private lateinit var notifications: NotificationHelper
     private lateinit var audioRouter: AudioRouter
     private lateinit var speech: SpeechOutput
@@ -74,6 +75,7 @@ class MainActivity : ComponentActivity() {
         speech = SpeechOutput(this)
         deviceRoles = DeviceRoleManager(this)
         moodEngine = MoodEngine(this)
+        brain = HybridBrain(this)
         startPhoneMessageSync()
 
         setContent {
@@ -312,7 +314,7 @@ class MainActivity : ComponentActivity() {
                                                             .filter { it.isNotBlank() }
                                                             .joinToString("\n\n")
                                                         reply = try {
-                                                            chat.send(msg, adaptiveContext)
+                                                            brain.answer(msg, adaptiveContext).text
                                                         } catch (e: Exception) {
                                                             "I hit a connection problem: ${e.message ?: "unknown error"}"
                                                         }
@@ -567,6 +569,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        brain.shutdown()
         speech.shutdown()
         audioRouter.clearRoute()
         ble.disconnect()
