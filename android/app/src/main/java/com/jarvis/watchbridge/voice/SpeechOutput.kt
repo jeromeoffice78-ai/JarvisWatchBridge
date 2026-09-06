@@ -30,6 +30,12 @@ class SpeechOutput(context: Context) : TextToSpeech.OnInitListener {
         }
     }
 
+    fun setVoiceStyle(rate: Float, pitch: Float) {
+        if (!ready) return
+        tts.setSpeechRate(rate.coerceIn(0.75f, 1.20f))
+        tts.setPitch(pitch.coerceIn(0.90f, 1.10f))
+    }
+
     fun setSpeakingListener(onSpeakingChanged: (Boolean) -> Unit) {
         listener = onSpeakingChanged
     }
@@ -37,7 +43,10 @@ class SpeechOutput(context: Context) : TextToSpeech.OnInitListener {
     fun speak(text: String) {
         if (!ready || text.isBlank()) return
         val utteranceId = "jarvis-main-${System.currentTimeMillis()}"
-        tts.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), utteranceId)
+        val params = Bundle().apply {
+            putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+        }
+        tts.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
     }
 
     fun stop() {
