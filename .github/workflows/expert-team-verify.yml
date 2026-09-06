@@ -1,0 +1,71 @@
+name: Verify JARVIS Expert Team
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [production-hardening-v2.3.0, main]
+    paths:
+      - 'backend/team.py'
+      - 'backend/main.py'
+      - 'android/app/src/main/java/com/jarvis/watchbridge/team/**'
+      - 'android/app/src/main/java/com/jarvis/watchbridge/ui/ExpertTeamPanel.kt'
+      - 'android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt'
+      - 'scripts/integrate_expert_team.py'
+      - '.github/workflows/expert-team-verify.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-team:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify safe integration patch
+        run: |
+          python scripts/integrate_expert_team.py
+          grep -Fq 'app.include_router(team_router)' backend/main.py
+          grep -Fq 'ExpertTeamPanel()' android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+      - name: Verify backend team API
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -r backend/requirements.txt >/dev/null
+          python -m py_compile backend/main.py backend/team.py
+          cd backend
+          python - <<'PY'
+          from main import app
+          paths = {route.path for route in app.routes}
+          required = {'/team', '/team/chat', '/team/assign', '/team/orchestrate', '/team/assignments'}
+          missing = required - paths
+          if missing:
+              raise SystemExit(f'Missing team routes: {sorted(missing)}')
+          print('Expert team backend routes verified')
+          PY
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Compile expert team Android integration
+        working-directory: android
+        env:
+          JARVIS_API_BASE_URL: https://jarvis-watch-bridge-api.onrender.com/
+          JARVIS_SETUP_TOKEN: ci-team-token
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+          gradle :app:compileReleaseKotlin --stacktrace
+          grep -Fq 'Athena Cross' app/src/main/java/com/jarvis/watchbridge/team/TeamRepository.kt
+          grep -Fq 'Marcus Vale' app/src/main/java/com/jarvis/watchbridge/team/TeamRepository.kt
+          grep -Fq 'Nova Reed' app/src/main/java/com/jarvis/watchbridge/team/TeamRepository.kt
+          grep -Fq 'Assign to JARVIS Team' app/src/main/java/com/jarvis/watchbridge/ui/ExpertTeamPanel.kt
