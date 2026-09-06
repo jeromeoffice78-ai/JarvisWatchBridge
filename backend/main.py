@@ -1,17 +1,23 @@
 import os
+import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from openai import OpenAI
 
-app = FastAPI(title="JARVIS Watch Bridge API", version="0.5.0")
+app = FastAPI(title="JARVIS Watch Bridge API", version="0.6.0")
 VAPI_BASE = "https://api.vapi.ai"
 JARVIS_PHONE_NUMBER = "+15318679252"
 JARVIS_ASSISTANT_NAMES = ("JARVIS Phone Receptionist v2", "JARVIS Phone Receptionist")
 RECENT_CALL_EVENTS: list[dict[str, Any]] = []
+DEVICE_REGISTRY: dict[str, dict[str, Any]] = {}
+DEVICE_COMMANDS: list[dict[str, Any]] = []
+PRIMARY_DEVICE_ID: str | None = None
+PRIMARY_STALE_SECONDS = 90
 
 
 class ChatRequest(BaseModel):
@@ -25,6 +31,41 @@ class ChatResponse(BaseModel):
 
 class PhoneSetupRequest(BaseModel):
     area_code: str = Field(default="531", pattern=r"^\d{3}$")
+
+
+class DeviceRegisterRequest(BaseModel):
+    deviceId: str = Field(min_length=3, max_length=256)
+    deviceName: str = Field(min_length=1, max_length=256)
+    deviceModel: str = Field(min_length=1, max_length=256)
+    preferredRole: str = Field(default="companion", pattern=r"^(primary|companion)$")
+    connected: bool = False
+    watchBleAddress: str | None = Field(default=None, max_length=64)
+
+
+class DeviceHeartbeatRequest(BaseModel):
+    deviceId: str = Field(min_length=3, max_length=256)
+    connected: bool = False
+    watchBleAddress: str | None = Field(default=None, max_length=64)
+
+
+class DeviceTakeoverRequest(BaseModel):
+    deviceId: str = Field(min_length=3, max_length=256)
+    deviceName: str = Field(min_length=1, max_length=256)
+    deviceModel: str = Field(min_length=1, max_length=256)
+    watchBleAddress: str | None = Field(default=None, max_length=64)
+
+
+class DeviceCommandRequest(BaseModel):
+    deviceId: str = Field(min_length=3, max_length=256)
+    action: str = Field(min_length=1, max_length=128)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeviceResultRequest(BaseModel):
+    commandId: str = Field(min_length=3, max_length=256)
+    deviceId: str = Field(min_length=3, max_length=256)
+    status: str = Field(pattern=r"^(succeeded|failed)$")
+    result: dict[str, Any] = Field(default_factory=dict)
 
 
 def _vapi_key() -> str:
@@ -65,6 +106,23 @@ def _watch_text(summary: str, caller: str | None, urgent: bool = False) -> str:
     body = " ".join((summary or "Call completed.").split())
     text = f"{lead}: {who} — {body}"
     return text[:120]
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _primary_is_stale() -> bool:
+    if not PRIMARY_DEVICE_ID:
+        return True
+    record = DEVICE_REGISTRY.get(PRIMARY_DEVICE_ID)
+    if not record:
+        return True
+    return time.time() - float(record.get("lastSeenEpoch", 0)) > PRIMARY_STALE_SECONDS
+
+
+def _device_role(device_id: str) -> str:
+    return "primary" if PRIMARY_DEVICE_ID == device_id else "companion"
 
 
 async def _vapi(method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
@@ -139,7 +197,11 @@ async def _bind_existing_phone() -> dict[str, Any] | None:
     if not phone:
         return None
     if phone.get("assistantId") != assistant["id"]:
-        phone = await _vapi("PATCH", f"/phone-number/{phone['id']}", {"assistantId": assistant["id"], "name": "JARVIS Free Line"})
+        phone = await _vapi(
+            "PATCH",
+            f"/phone-number/{phone['id']}",
+            {"assistantId": assistant["id"], "name": "JARVIS Free Line"},
+        )
     return {"assistant": assistant, "phone": phone}
 
 
@@ -184,11 +246,15 @@ async def auto_configure_vapi() -> None:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "jarvis-watch-bridge", "version": "0.5.0"}
+    return {"status": "ok", "service": "jarvis-watch-bridge", "version": "0.6.0"}
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest) -> ChatResponse:
+def chat(
+    req: ChatRequest,
+    x_jarvis_admin_token: str | None = Header(default=None),
+) -> ChatResponse:
+    _require_admin(x_jarvis_admin_token)
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured")
@@ -211,6 +277,161 @@ def chat(req: ChatRequest) -> ChatResponse:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI service error: {exc}") from exc
     return ChatResponse(reply=response.output_text.strip())
+
+
+@app.post("/device/register")
+def device_register(
+    req: DeviceRegisterRequest,
+    x_jarvis_admin_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    global PRIMARY_DEVICE_ID
+    _require_admin(x_jarvis_admin_token)
+
+    now_epoch = time.time()
+    DEVICE_REGISTRY[req.deviceId] = {
+        "deviceId": req.deviceId,
+        "deviceName": req.deviceName,
+        "deviceModel": req.deviceModel,
+        "preferredRole": req.preferredRole,
+        "connected": req.connected,
+        "watchBleAddress": req.watchBleAddress,
+        "lastSeen": _now_iso(),
+        "lastSeenEpoch": now_epoch,
+    }
+
+    if PRIMARY_DEVICE_ID is None or _primary_is_stale():
+        if req.preferredRole == "primary" or PRIMARY_DEVICE_ID is None:
+            PRIMARY_DEVICE_ID = req.deviceId
+
+    return {
+        "role": _device_role(req.deviceId),
+        "primaryDeviceId": PRIMARY_DEVICE_ID,
+        "deviceId": req.deviceId,
+    }
+
+
+@app.post("/device/heartbeat")
+def device_heartbeat(
+    req: DeviceHeartbeatRequest,
+    x_jarvis_admin_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    global PRIMARY_DEVICE_ID
+    _require_admin(x_jarvis_admin_token)
+
+    record = DEVICE_REGISTRY.setdefault(
+        req.deviceId,
+        {
+            "deviceId": req.deviceId,
+            "deviceName": req.deviceId,
+            "deviceModel": "Android",
+            "preferredRole": "companion",
+        },
+    )
+    record.update(
+        connected=req.connected,
+        watchBleAddress=req.watchBleAddress,
+        lastSeen=_now_iso(),
+        lastSeenEpoch=time.time(),
+    )
+
+    if PRIMARY_DEVICE_ID and _primary_is_stale():
+        PRIMARY_DEVICE_ID = None
+    if PRIMARY_DEVICE_ID is None and record.get("preferredRole") == "primary":
+        PRIMARY_DEVICE_ID = req.deviceId
+
+    return {
+        "role": _device_role(req.deviceId),
+        "primaryDeviceId": PRIMARY_DEVICE_ID,
+    }
+
+
+@app.post("/device/takeover")
+def device_takeover(
+    req: DeviceTakeoverRequest,
+    x_jarvis_admin_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    global PRIMARY_DEVICE_ID
+    _require_admin(x_jarvis_admin_token)
+
+    DEVICE_REGISTRY[req.deviceId] = {
+        "deviceId": req.deviceId,
+        "deviceName": req.deviceName,
+        "deviceModel": req.deviceModel,
+        "preferredRole": "primary",
+        "connected": False,
+        "watchBleAddress": req.watchBleAddress,
+        "lastSeen": _now_iso(),
+        "lastSeenEpoch": time.time(),
+    }
+    PRIMARY_DEVICE_ID = req.deviceId
+    return {"role": "primary", "primaryDeviceId": PRIMARY_DEVICE_ID}
+
+
+@app.get("/device/status")
+def device_status(
+    x_jarvis_admin_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _require_admin(x_jarvis_admin_token)
+    devices = []
+    for device_id, record in DEVICE_REGISTRY.items():
+        public = dict(record)
+        public.pop("lastSeenEpoch", None)
+        public["role"] = _device_role(device_id)
+        devices.append(public)
+    return {"primaryDeviceId": PRIMARY_DEVICE_ID, "devices": devices}
+
+
+@app.post("/device/command")
+def device_command(
+    req: DeviceCommandRequest,
+    x_jarvis_admin_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _require_admin(x_jarvis_admin_token)
+    if req.deviceId not in DEVICE_REGISTRY:
+        raise HTTPException(status_code=404, detail="Device is not registered")
+
+    command = {
+        "id": str(uuid.uuid4()),
+        "deviceId": req.deviceId,
+        "action": req.action,
+        "payload": req.payload,
+        "status": "approved",
+        "createdAt": _now_iso(),
+        "result": None,
+    }
+    DEVICE_COMMANDS.insert(0, command)
+    del DEVICE_COMMANDS[500:]
+    return command
+
+
+@app.get("/device/commands")
+def device_commands(
+    deviceId: str = Query(min_length=3, max_length=256),
+    x_jarvis_admin_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _require_admin(x_jarvis_admin_token)
+    commands = [
+        command for command in DEVICE_COMMANDS
+        if command.get("deviceId") == deviceId and command.get("status") == "approved"
+    ][:25]
+    return {"commands": commands}
+
+
+@app.post("/device/result")
+def device_result(
+    req: DeviceResultRequest,
+    x_jarvis_admin_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _require_admin(x_jarvis_admin_token)
+    command = next((item for item in DEVICE_COMMANDS if item.get("id") == req.commandId), None)
+    if command is None:
+        raise HTTPException(status_code=404, detail="Command not found")
+    if command.get("deviceId") != req.deviceId:
+        raise HTTPException(status_code=409, detail="Command/device mismatch")
+    command["status"] = req.status
+    command["result"] = req.result
+    command["completedAt"] = _now_iso()
+    return {"ok": True, "command": command}
 
 
 @app.post("/phone/setup")
@@ -241,9 +462,16 @@ async def setup_phone(
                 if exc.status_code not in (400, 404, 409, 422):
                     raise
         if not phone:
-            raise HTTPException(status_code=409, detail={"message": "No requested free number is currently available", "tried": tried})
+            raise HTTPException(
+                status_code=409,
+                detail={"message": "No requested free number is currently available", "tried": tried},
+            )
     elif phone.get("assistantId") != assistant["id"] or phone.get("name") != "JARVIS Free Line":
-        phone = await _vapi("PATCH", f"/phone-number/{phone['id']}", {"assistantId": assistant["id"], "name": "JARVIS Free Line"})
+        phone = await _vapi(
+            "PATCH",
+            f"/phone-number/{phone['id']}",
+            {"assistantId": assistant["id"], "name": "JARVIS Free Line"},
+        )
 
     return {
         "active": True,
@@ -271,14 +499,16 @@ async def vapi_webhook(request: Request) -> dict[str, bool]:
         if message.get("endedAt"):
             call["endedAt"] = message.get("endedAt")
         event = _message_from_call(call)
-        event["receivedAt"] = datetime.now(timezone.utc).isoformat()
+        event["receivedAt"] = _now_iso()
         RECENT_CALL_EVENTS.insert(0, event)
         del RECENT_CALL_EVENTS[50:]
     return {"ok": True}
 
 
 @app.get("/phone/messages")
-async def phone_messages(x_jarvis_admin_token: str | None = Header(default=None)) -> dict[str, Any]:
+async def phone_messages(
+    x_jarvis_admin_token: str | None = Header(default=None),
+) -> dict[str, Any]:
     _require_admin(x_jarvis_admin_token)
     calls = await _vapi("GET", "/call")
     messages = [_message_from_call(call) for call in (calls[:25] if isinstance(calls, list) else [])]
@@ -286,7 +516,9 @@ async def phone_messages(x_jarvis_admin_token: str | None = Header(default=None)
 
 
 @app.get("/watch/alerts")
-async def watch_alerts(x_jarvis_admin_token: str | None = Header(default=None)) -> dict[str, Any]:
+async def watch_alerts(
+    x_jarvis_admin_token: str | None = Header(default=None),
+) -> dict[str, Any]:
     _require_admin(x_jarvis_admin_token)
     calls = await _vapi("GET", "/call")
     alerts = [_message_from_call(call) for call in (calls[:10] if isinstance(calls, list) else [])]
