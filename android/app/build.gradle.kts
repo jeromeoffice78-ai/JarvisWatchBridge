@@ -9,14 +9,14 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        // Isolated package ID prevents confusion with the older CloudFront/Floot test installs.
-        applicationId = "com.jarvis.chairman.render"
+        // Unique package ID prevents Android from launching any older CloudFront/Floot build by mistake.
+        applicationId = "com.jarvis.chairman.render250"
         minSdk = 28
         targetSdk = 36
-        versionCode = 241
-        versionName = "2.4.1"
+        versionCode = 250
+        versionName = "2.5.0"
 
-        // Dedicated FastAPI backend. No runtime fallback to the old CloudFront/Floot frontend.
+        // Render-only FastAPI backend. No CloudFront/Floot fallback exists in this build.
         buildConfigField(
             "String",
             "API_BASE_URL",
