@@ -49,12 +49,8 @@ class BleManager(private val context: Context) {
     private var shouldReconnect = true
 
     companion object {
-        // This is the watch address that previously connected successfully on Jerome's device.
-        const val TARGET_WATCH_LE_ADDRESS = "15:4D:A4:66:5E:6E"
-        private val KNOWN_WATCH_ADDRESSES = setOf(
-            TARGET_WATCH_LE_ADDRESS,
-            "41:42:69:41:49:D5"
-        )
+        // Confirmed directly from the watch About screen. This is the LE/GATT address.
+        const val TARGET_WATCH_LE_ADDRESS = "41:42:69:41:49:D5"
         private val TARGET_WATCH_NAMES = listOf("JARVIS WATCH", "WATCH", "V19", "LAXASFIT")
         private const val RECONNECT_DELAY_MS = 3_000L
         private const val CONNECTION_TIMEOUT_MS = 12_000L
@@ -90,7 +86,7 @@ class BleManager(private val context: Context) {
     }
 
     private fun isJarvisTarget(name: String?, address: String): Boolean {
-        if (KNOWN_WATCH_ADDRESSES.any { address.equals(it, ignoreCase = true) }) return true
+        if (address.equals(TARGET_WATCH_LE_ADDRESS, ignoreCase = true)) return true
         val normalized = name.orEmpty().uppercase()
         return TARGET_WATCH_NAMES.any { normalized == it || normalized.contains(it) }
     }
@@ -158,7 +154,7 @@ class BleManager(private val context: Context) {
         }
         if (_state.value.connectedAddress != null) return
 
-        // Scan first so randomized/private BLE addresses and the actual advertising address win.
+        // Scan first so the actual advertised LE address is used when available.
         clearPendingConnection()
         startScan()
 
