@@ -2,6 +2,7 @@ package com.jarvis.watchbridge.ble
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
@@ -20,6 +21,7 @@ import android.os.Looper
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.util.ArrayDeque
 import java.util.UUID
 
 class BleManager(private val context: Context) {
@@ -40,25 +42,47 @@ class BleManager(private val context: Context) {
         val error: String? = null
     )
 
+    private data class Candidate(
+        val address: String,
+        val autoConnect: Boolean,
+        val label: String
+    )
+
     private val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
     private val adapter get() = bluetoothManager?.adapter
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state
+
     private val handler = Handler(Looper.getMainLooper())
     private var gatt: BluetoothGatt? = null
     private var shouldReconnect = true
+    private var scanGeneration = 0
+    private var modernScanResults = 0
+    private var legacyScanResults = 0
+    private var legacyScanning = false
+    private val attemptQueue = ArrayDeque<Candidate>()
 
     companion object {
-        // Confirmed directly from the watch About screen. This is the LE/GATT address.
+        // Confirmed directly from the watch About screen.
         const val TARGET_WATCH_LE_ADDRESS = "41:42:69:41:49:D5"
+        const val TARGET_WATCH_BT_ADDRESS = "41:42:69:41:49:80"
         private val TARGET_WATCH_NAMES = listOf("JARVIS WATCH", "WATCH", "V19", "LAXASFIT")
-        private const val RECONNECT_DELAY_MS = 3_000L
-        private const val CONNECTION_TIMEOUT_MS = 12_000L
-        private const val INITIAL_SCAN_MS = 8_000L
+
+        private const val MODERN_SCAN_MS = 6_000L
+        private const val LEGACY_SCAN_MS = 6_000L
+        private const val DIRECT_CONNECT_TIMEOUT_MS = 10_000L
+        private const val AUTO_CONNECT_TIMEOUT_MS = 18_000L
+        private const val RECONNECT_DELAY_MS = 4_000L
 
         val HEART_RATE_SERVICE: UUID = UUID.fromString("0000180d-0000-1000-8000-00805f9b34fb")
         val HEART_RATE_MEASUREMENT: UUID = UUID.fromString("00002a37-0000-1000-8000-00805f9b34fb")
         val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    }
+
+    private val reconnectRunnable = Runnable {
+        if (shouldReconnect && _state.value.connectedAddress == null && _state.value.connectingAddress == null) {
+            connectTargetWatch()
+        }
     }
 
     private fun hasScanPermission(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -75,7 +99,7 @@ class BleManager(private val context: Context) {
 
     private fun bluetoothReady(): Boolean {
         val bluetoothAdapter = adapter ?: run {
-            _state.value = _state.value.copy(error = "Bluetooth is unavailable on this device")
+            _state.value = _state.value.copy(error = "Bluetooth is unavailable on this tablet")
             return false
         }
         if (!bluetoothAdapter.isEnabled) {
@@ -87,66 +111,175 @@ class BleManager(private val context: Context) {
 
     private fun isJarvisTarget(name: String?, address: String): Boolean {
         if (address.equals(TARGET_WATCH_LE_ADDRESS, ignoreCase = true)) return true
+        if (address.equals(TARGET_WATCH_BT_ADDRESS, ignoreCase = true)) return true
         val normalized = name.orEmpty().uppercase()
         return TARGET_WATCH_NAMES.any { normalized == it || normalized.contains(it) }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun bondedWatchDevices(): List<BluetoothDevice> {
+        if (!hasConnectPermission()) return emptyList()
+        return runCatching {
+            adapter?.bondedDevices.orEmpty().filter { device ->
+                isJarvisTarget(device.name, device.address)
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun watchAlreadyHeldByAnotherGattClient(): BluetoothDevice? {
+        if (!hasConnectPermission()) return null
+        if (_state.value.connectedAddress != null) return null
+        return runCatching {
+            bluetoothManager
+                ?.getConnectedDevices(BluetoothProfile.GATT)
+                ?.firstOrNull { device -> isJarvisTarget(device.name, device.address) }
+        }.getOrNull()
+    }
+
+    private fun mergeDevice(device: Device) {
+        val updated = (_state.value.devices + device)
+            .distinctBy { it.address.uppercase() }
+            .sortedWith(compareByDescending<Device> { it.jarvisTarget }.thenBy { it.name.lowercase() })
+        _state.value = _state.value.copy(devices = updated)
+    }
+
+    private fun handleDiscoveredDevice(device: BluetoothDevice, advertisedName: String?) {
+        if (!hasConnectPermission()) return
+        @SuppressLint("MissingPermission")
+        val name = runCatching { device.name }.getOrNull() ?: advertisedName ?: "BLE device"
+        val address = device.address
+        val target = isJarvisTarget(name, address)
+        mergeDevice(Device(name, address, target))
+
+        if (target && _state.value.connectedAddress == null && _state.value.connectingAddress == null) {
+            beginConnectionPlan(address, "scan result")
+        }
     }
 
     private val scanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val name = result.device.name ?: result.scanRecord?.deviceName ?: "BLE device"
-            val address = result.device.address
-            val target = isJarvisTarget(name, address)
-            val device = Device(name, address, target)
-            val updated = (_state.value.devices + device)
-                .distinctBy { it.address }
-                .sortedWith(compareByDescending<Device> { it.jarvisTarget }.thenBy { it.name.lowercase() })
-            _state.value = _state.value.copy(devices = updated)
+            modernScanResults += 1
+            handleDiscoveredDevice(result.device, result.scanRecord?.deviceName)
+        }
 
-            if (target && _state.value.connectedAddress == null && _state.value.connectingAddress == null) {
-                connect(address)
+        @SuppressLint("MissingPermission")
+        override fun onBatchScanResults(results: MutableList<ScanResult>) {
+            results.forEach { result ->
+                modernScanResults += 1
+                handleDiscoveredDevice(result.device, result.scanRecord?.deviceName)
             }
         }
 
         override fun onScanFailed(errorCode: Int) {
-            _state.value = _state.value.copy(scanning = false, error = "BLE scan failed: $errorCode")
-            scheduleReconnect()
+            if (!_state.value.scanning) return
+            _state.value = _state.value.copy(error = "Modern BLE scan failed ($errorCode); trying legacy scan")
+            startLegacyScan(scanGeneration)
         }
     }
 
+    private val legacyScanCallback = BluetoothAdapter.LeScanCallback { device, _, _ ->
+        legacyScanResults += 1
+        handleDiscoveredDevice(device, null)
+    }
+
     @SuppressLint("MissingPermission")
-    fun startScan() {
+    private fun stopActiveScans() {
+        if (hasScanPermission()) {
+            runCatching { adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
+            if (legacyScanning) runCatching { adapter?.stopLeScan(legacyScanCallback) }
+        }
+        legacyScanning = false
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startModernScan(resetDevices: Boolean) {
         if (!bluetoothReady()) return
         if (!hasScanPermission()) {
             _state.value = _state.value.copy(error = "Nearby devices permission required")
             return
         }
+
         val scanner = adapter?.bluetoothLeScanner ?: run {
             _state.value = _state.value.copy(error = "Bluetooth LE scanner unavailable")
             return
         }
 
-        shouldReconnect = true
-        runCatching { scanner.stopScan(scanCallback) }
-        _state.value = _state.value.copy(scanning = true, devices = emptyList(), error = null)
+        scanGeneration += 1
+        val generation = scanGeneration
+        modernScanResults = 0
+        legacyScanResults = 0
+        stopActiveScans()
+
+        val bonded = bondedWatchDevices().map { device ->
+            Device(device.name ?: "Paired watch", device.address, true)
+        }
+
+        _state.value = _state.value.copy(
+            scanning = true,
+            connectingAddress = null,
+            devices = if (resetDevices) bonded else (_state.value.devices + bonded).distinctBy { it.address.uppercase() },
+            error = "Scanning for watch on tablet…"
+        )
+
         scanner.startScan(
             null,
-            ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(),
+            ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .setReportDelay(0)
+                .build(),
             scanCallback
         )
+
+        handler.postDelayed({
+            if (generation != scanGeneration || _state.value.connectedAddress != null || _state.value.connectingAddress != null) {
+                return@postDelayed
+            }
+            startLegacyScan(generation)
+        }, MODERN_SCAN_MS)
     }
 
     @SuppressLint("MissingPermission")
+    private fun startLegacyScan(generation: Int) {
+        if (generation != scanGeneration || _state.value.connectedAddress != null || _state.value.connectingAddress != null) return
+        if (!hasScanPermission()) return
+
+        runCatching { adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
+        legacyScanning = runCatching { adapter?.startLeScan(legacyScanCallback) == true }.getOrDefault(false)
+        _state.value = _state.value.copy(
+            scanning = true,
+            error = "No watch yet. Modern scan saw $modernScanResults result(s); trying legacy BLE scan…"
+        )
+
+        handler.postDelayed({
+            if (generation != scanGeneration || _state.value.connectedAddress != null || _state.value.connectingAddress != null) {
+                return@postDelayed
+            }
+            stopActiveScans()
+            _state.value = _state.value.copy(scanning = false)
+            beginFallbackPlan("Scanner saw ${modernScanResults + legacyScanResults} BLE result(s), but not the watch")
+        }, LEGACY_SCAN_MS)
+    }
+
+    fun startScan() {
+        shouldReconnect = true
+        handler.removeCallbacks(reconnectRunnable)
+        if (_state.value.connectedAddress != null) return
+        clearPendingConnection()
+        startModernScan(resetDevices = true)
+    }
+
     fun stopScan() {
-        if (hasScanPermission()) {
-            runCatching { adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
-        }
+        scanGeneration += 1
+        stopActiveScans()
         _state.value = _state.value.copy(scanning = false)
     }
 
     @SuppressLint("MissingPermission")
     fun connectTargetWatch() {
         shouldReconnect = true
+        handler.removeCallbacks(reconnectRunnable)
         if (!bluetoothReady()) return
         if (!hasConnectPermission() || !hasScanPermission()) {
             _state.value = _state.value.copy(error = "Nearby devices permission required")
@@ -154,69 +287,140 @@ class BleManager(private val context: Context) {
         }
         if (_state.value.connectedAddress != null) return
 
-        // Scan first so the actual advertised LE address is used when available.
-        clearPendingConnection()
-        startScan()
-
-        handler.postDelayed({
-            if (_state.value.connectedAddress == null && _state.value.connectingAddress == null) {
-                stopScan()
-                connect(TARGET_WATCH_LE_ADDRESS)
-            }
-        }, INITIAL_SCAN_MS)
-    }
-
-    @SuppressLint("MissingPermission")
-    fun connect(address: String) {
-        if (!bluetoothReady()) return
-        if (!hasConnectPermission()) {
-            _state.value = _state.value.copy(error = "Nearby devices permission required")
+        watchAlreadyHeldByAnotherGattClient()?.let { held ->
+            _state.value = _state.value.copy(
+                scanning = false,
+                connectingAddress = null,
+                error = "Watch BLE is already connected through another app (${held.address}). Force-stop Laxasfit, then tap Reconnect watch."
+            )
+            scheduleReconnect()
             return
         }
 
+        clearPendingConnection()
+        startModernScan(resetDevices = true)
+    }
+
+    fun connect(address: String) {
         shouldReconnect = true
-        stopScan()
+        handler.removeCallbacks(reconnectRunnable)
+        beginConnectionPlan(address, "selected device")
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun beginConnectionPlan(firstAddress: String, reason: String) {
+        scanGeneration += 1
+        stopActiveScans()
+        clearPendingConnection()
+        attemptQueue.clear()
+
+        addCandidate(firstAddress, false, reason)
+        addCandidate(TARGET_WATCH_LE_ADDRESS, false, "confirmed LE address")
+        addCandidate(TARGET_WATCH_BT_ADDRESS, false, "watch BT identity address")
+        bondedWatchDevices().forEach { device ->
+            addCandidate(device.address, false, "paired Watch on tablet")
+        }
+        addCandidate(TARGET_WATCH_LE_ADDRESS, true, "background LE reconnect")
+
+        tryNextCandidate(null)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun beginFallbackPlan(reason: String) {
+        attemptQueue.clear()
+        addCandidate(TARGET_WATCH_LE_ADDRESS, false, "confirmed LE address")
+        addCandidate(TARGET_WATCH_BT_ADDRESS, false, "watch BT identity address")
+        bondedWatchDevices().forEach { device ->
+            addCandidate(device.address, false, "paired Watch on tablet")
+        }
+        addCandidate(TARGET_WATCH_LE_ADDRESS, true, "background LE reconnect")
+        tryNextCandidate(reason)
+    }
+
+    private fun addCandidate(address: String, autoConnect: Boolean, label: String) {
+        if (address.isBlank()) return
+        if (attemptQueue.any { it.address.equals(address, ignoreCase = true) && it.autoConnect == autoConnect }) return
+        attemptQueue.addLast(Candidate(address, autoConnect, label))
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun tryNextCandidate(lastFailure: String?) {
+        if (!shouldReconnect || _state.value.connectedAddress != null) return
+        val candidate = attemptQueue.pollFirst()
+        if (candidate == null) {
+            _state.value = _state.value.copy(
+                scanning = false,
+                connectingAddress = null,
+                error = buildString {
+                    append("Watch BLE not connected")
+                    if (!lastFailure.isNullOrBlank()) append(": $lastFailure")
+                    append(". Retrying scan automatically.")
+                }
+            )
+            scheduleReconnect()
+            return
+        }
+
         val device = try {
-            adapter?.getRemoteDevice(address)
+            adapter?.getRemoteDevice(candidate.address)
         } catch (_: IllegalArgumentException) {
-            _state.value = _state.value.copy(error = "Invalid Bluetooth address: $address")
             null
-        } ?: return
+        }
+        if (device == null) {
+            tryNextCandidate("invalid address ${candidate.address}")
+            return
+        }
 
         clearPendingConnection()
-        _state.value = _state.value.copy(connectingAddress = address, error = null)
-        val newGatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        _state.value = _state.value.copy(
+            scanning = false,
+            connectingAddress = candidate.address,
+            error = "Connecting ${candidate.label}: ${candidate.address}${if (candidate.autoConnect) " (background)" else ""}"
+        )
+
+        val newGatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            device.connectGatt(
+                context,
+                candidate.autoConnect,
+                gattCallback,
+                BluetoothDevice.TRANSPORT_LE,
+                BluetoothDevice.PHY_LE_1M_MASK
+            )
+        } else {
+            device.connectGatt(context, candidate.autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        }
         gatt = newGatt
 
+        val timeout = if (candidate.autoConnect) AUTO_CONNECT_TIMEOUT_MS else DIRECT_CONNECT_TIMEOUT_MS
         handler.postDelayed({
-            if (_state.value.connectedAddress == null && _state.value.connectingAddress.equals(address, ignoreCase = true)) {
+            if (gatt === newGatt && _state.value.connectedAddress == null) {
+                gatt = null
                 runCatching { newGatt.disconnect() }
                 runCatching { newGatt.close() }
-                if (gatt === newGatt) gatt = null
-                _state.value = _state.value.copy(
-                    connectingAddress = null,
-                    error = "Watch connection timed out; scanning again"
-                )
-                startScan()
+                _state.value = _state.value.copy(connectingAddress = null)
+                tryNextCandidate("timeout on ${candidate.address}")
             }
-        }, CONNECTION_TIMEOUT_MS)
+        }, timeout)
     }
 
     @SuppressLint("MissingPermission")
     private fun clearPendingConnection() {
-        if (hasConnectPermission()) runCatching { gatt?.disconnect() }
-        runCatching { gatt?.close() }
+        val oldGatt = gatt
         gatt = null
+        if (oldGatt != null && hasConnectPermission()) runCatching { oldGatt.disconnect() }
+        runCatching { oldGatt?.close() }
         _state.value = _state.value.copy(connectingAddress = null)
     }
 
-    @SuppressLint("MissingPermission")
     fun disconnect() {
         shouldReconnect = false
         handler.removeCallbacksAndMessages(null)
-        stopScan()
+        scanGeneration += 1
+        stopActiveScans()
+        attemptQueue.clear()
         clearPendingConnection()
         _state.value = _state.value.copy(
+            scanning = false,
             connectedName = null,
             connectedAddress = null,
             connectingAddress = null,
@@ -228,42 +432,51 @@ class BleManager(private val context: Context) {
 
     private fun scheduleReconnect() {
         if (!shouldReconnect) return
-        handler.postDelayed({
-            if (_state.value.connectedAddress == null) connectTargetWatch()
-        }, RECONNECT_DELAY_MS)
+        handler.removeCallbacks(reconnectRunnable)
+        handler.postDelayed(reconnectRunnable, RECONNECT_DELAY_MS)
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            when {
-                status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED -> {
-                    gatt = g
-                    _state.value = _state.value.copy(
-                        connectedName = g.device.name ?: "JARVIS Watch",
-                        connectedAddress = g.device.address,
-                        connectingAddress = null,
-                        scanning = false,
-                        error = null
-                    )
-                    g.discoverServices()
-                }
+            if (gatt !== g) {
+                runCatching { g.close() }
+                return
+            }
 
-                newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS -> {
-                    runCatching { g.close() }
-                    if (gatt === g) gatt = null
-                    _state.value = _state.value.copy(
-                        connectedName = null,
-                        connectedAddress = null,
-                        connectingAddress = null,
-                        heartRateBpm = null,
-                        services = emptyList(),
-                        error = if (status == BluetoothGatt.GATT_SUCCESS) {
-                            "Watch disconnected; reconnecting"
-                        } else {
-                            "Watch connection failed (GATT $status); reconnecting"
-                        }
-                    )
+            if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
+                attemptQueue.clear()
+                _state.value = _state.value.copy(
+                    scanning = false,
+                    connectedName = g.device.name ?: "JARVIS Watch",
+                    connectedAddress = g.device.address,
+                    connectingAddress = null,
+                    error = null
+                )
+                runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
+                g.discoverServices()
+                return
+            }
+
+            if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
+                gatt = null
+                runCatching { g.close() }
+                _state.value = _state.value.copy(
+                    connectedName = null,
+                    connectedAddress = null,
+                    connectingAddress = null,
+                    heartRateBpm = null,
+                    services = emptyList(),
+                    error = if (status == BluetoothGatt.GATT_SUCCESS) {
+                        "Watch disconnected"
+                    } else {
+                        "Watch GATT status $status; trying next connection method"
+                    }
+                )
+
+                if (attemptQueue.isNotEmpty()) {
+                    handler.postDelayed({ tryNextCandidate("GATT $status") }, 500L)
+                } else {
                     scheduleReconnect()
                 }
             }
@@ -271,6 +484,7 @@ class BleManager(private val context: Context) {
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            if (gatt !== g) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 _state.value = _state.value.copy(error = "Connected, but service discovery failed: $status")
                 return
