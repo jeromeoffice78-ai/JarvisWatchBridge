@@ -27,6 +27,7 @@ class ChatRepository {
         val builder = Request.Builder()
             .url(BuildConfig.API_BASE_URL.trimEnd('/') + "/chat")
             .addHeader("Accept", "application/json")
+            .addHeader("User-Agent", "JARVIS-Chairman/${BuildConfig.VERSION_NAME}")
             .post(body)
 
         val token = BuildConfig.JARVIS_SETUP_TOKEN.trim()
@@ -36,8 +37,30 @@ class ChatRepository {
 
         client.newCall(builder.build()).execute().use { response ->
             val text = response.body?.string().orEmpty()
-            if (!response.isSuccessful) error("API ${response.code}: $text")
-            JSONObject(text).getString("reply")
+            if (!response.isSuccessful) {
+                val contentType = response.header("content-type").orEmpty().lowercase()
+                val message = when {
+                    response.code == 403 && (contentType.contains("text/html") || text.contains("CloudFront", ignoreCase = true)) ->
+                        "JARVIS reached the wrong web gateway. Install the latest Chairman Render build."
+                    response.code == 503 && text.contains("OPENAI_API_KEY", ignoreCase = true) ->
+                        "JARVIS backend is online, but the OpenAI API key still needs to be connected."
+                    response.code == 401 ->
+                        "JARVIS Chairman authorization failed."
+                    text.trim().startsWith("{") -> runCatching {
+                        val root = JSONObject(text)
+                        root.optString("detail").ifBlank { root.optString("error") }
+                    }.getOrNull()?.takeIf { it.isNotBlank() }
+                        ?: "JARVIS API error ${response.code}."
+                    else -> "JARVIS API error ${response.code}."
+                }
+                error(message)
+            }
+
+            val root = runCatching { JSONObject(text) }.getOrElse {
+                error("JARVIS backend returned an invalid response.")
+            }
+            root.optString("reply").takeIf { it.isNotBlank() }
+                ?: error("JARVIS backend returned no reply.")
         }
     }
 }
