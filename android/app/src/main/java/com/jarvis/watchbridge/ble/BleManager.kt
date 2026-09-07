@@ -2,7 +2,13 @@ package com.jarvis.watchbridge.ble
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.bluetooth.*
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
@@ -30,6 +36,7 @@ class BleManager(private val context: Context) {
         val connectingAddress: String? = null,
         val heartRateBpm: Int? = null,
         val services: List<String> = emptyList(),
+        val characteristics: List<String> = emptyList(),
         val error: String? = null
     )
 
@@ -39,11 +46,14 @@ class BleManager(private val context: Context) {
     val state: StateFlow<State> = _state
     private val handler = Handler(Looper.getMainLooper())
     private var gatt: BluetoothGatt? = null
-    private var shouldReconnect = true
+    private var autoReconnect = false
+    private var reconnectAddress: String? = null
 
     companion object {
+        const val TARGET_WATCH_NAME = "Watch"
         const val TARGET_WATCH_LE_ADDRESS = "41:42:69:41:49:D5"
         private val TARGET_WATCH_NAMES = listOf("WATCH", "V19", "LAXASFIT")
+        private const val DIRECT_CONNECT_FALLBACK_MS = 4_000L
         private const val RECONNECT_DELAY_MS = 3_000L
 
         val HEART_RATE_SERVICE: UUID = UUID.fromString("0000180d-0000-1000-8000-00805f9b34fb")
@@ -61,12 +71,17 @@ class BleManager(private val context: Context) {
         Manifest.permission.BLUETOOTH_CONNECT
     ) == PackageManager.PERMISSION_GRANTED
 
+    @SuppressLint("MissingPermission")
     private fun bluetoothReady(): Boolean {
-        val a = adapter ?: run {
+        val bluetoothAdapter = adapter ?: run {
             _state.value = _state.value.copy(error = "Bluetooth is unavailable on this device")
             return false
         }
-        if (!a.isEnabled) {
+        val enabled = runCatching { bluetoothAdapter.isEnabled }.getOrElse {
+            _state.value = _state.value.copy(error = "Nearby devices permission is required")
+            return false
+        }
+        if (!enabled) {
             _state.value = _state.value.copy(error = "Turn Bluetooth on")
             return false
         }
@@ -75,8 +90,10 @@ class BleManager(private val context: Context) {
 
     private fun isJarvisTarget(name: String?, address: String): Boolean {
         if (address.equals(TARGET_WATCH_LE_ADDRESS, ignoreCase = true)) return true
-        val normalized = name.orEmpty().uppercase()
-        return TARGET_WATCH_NAMES.any { normalized == it || normalized.contains(it) }
+        val normalizedName = name.orEmpty().trim().uppercase()
+        return TARGET_WATCH_NAMES.any { target ->
+            normalizedName == target || normalizedName.contains(target)
+        }
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -91,7 +108,11 @@ class BleManager(private val context: Context) {
                 .sortedWith(compareByDescending<Device> { it.jarvisTarget }.thenBy { it.name.lowercase() })
             _state.value = _state.value.copy(devices = list)
 
-            if (target && _state.value.connectedAddress == null && _state.value.connectingAddress == null) {
+            if (
+                target &&
+                _state.value.connectedAddress == null &&
+                _state.value.connectingAddress == null
+            ) {
                 connect(address)
             }
         }
@@ -101,6 +122,7 @@ class BleManager(private val context: Context) {
                 scanning = false,
                 error = "BLE scan failed: $errorCode"
             )
+            scheduleReconnect()
         }
     }
 
@@ -108,14 +130,16 @@ class BleManager(private val context: Context) {
     fun startScan() {
         if (!bluetoothReady()) return
         if (!hasScanPermission()) {
-            _state.value = _state.value.copy(error = "Nearby devices permission required")
+            _state.value = _state.value.copy(error = "Nearby devices scan permission required")
             return
         }
         val scanner = adapter?.bluetoothLeScanner ?: run {
             _state.value = _state.value.copy(error = "Bluetooth LE scanner unavailable")
             return
         }
-        shouldReconnect = true
+
+        autoReconnect = true
+        runCatching { scanner.stopScan(scanCallback) }
         _state.value = _state.value.copy(
             scanning = true,
             devices = emptyList(),
@@ -123,7 +147,9 @@ class BleManager(private val context: Context) {
         )
         scanner.startScan(
             null,
-            ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(),
+            ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .build(),
             scanCallback
         )
     }
@@ -138,47 +164,52 @@ class BleManager(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun connectTargetWatch() {
-        shouldReconnect = true
+        autoReconnect = true
+        reconnectAddress = TARGET_WATCH_LE_ADDRESS
         if (!bluetoothReady()) return
         if (!hasConnectPermission()) {
-            _state.value = _state.value.copy(error = "Nearby devices permission required")
+            _state.value = _state.value.copy(error = "Nearby devices connect permission required")
             return
         }
 
-        // Try the known V19/Laxasfit address immediately. If the watch is using a
-        // randomized/private address, the scan fallback below will still find it by name.
-        runCatching {
-            connect(TARGET_WATCH_LE_ADDRESS)
-        }.onFailure {
-            _state.value = _state.value.copy(error = "Direct watch connection failed; scanning nearby")
-            startScan()
-        }
+        connect(TARGET_WATCH_LE_ADDRESS)
 
+        // Some watches rotate/private-randomize their BLE address. If the known V19 address does
+        // not connect promptly, abandon that attempt and scan by the known watch names as fallback.
         handler.postDelayed({
-            if (_state.value.connectedAddress == null && _state.value.connectingAddress == null) {
+            if (autoReconnect && _state.value.connectedAddress == null) {
+                if (hasConnectPermission()) runCatching { gatt?.close() }
+                gatt = null
+                _state.value = _state.value.copy(connectingAddress = null)
                 startScan()
             }
-        }, 4_000L)
+        }, DIRECT_CONNECT_FALLBACK_MS)
     }
 
     @SuppressLint("MissingPermission")
     fun connect(address: String) {
         if (!bluetoothReady()) return
         if (!hasConnectPermission()) {
-            _state.value = _state.value.copy(error = "Nearby devices permission required")
+            _state.value = _state.value.copy(error = "Nearby devices connect permission required")
             return
         }
 
-        shouldReconnect = true
         stopScan()
         val device = try {
             adapter?.getRemoteDevice(address)
-        } catch (e: IllegalArgumentException) {
-            _state.value = _state.value.copy(error = "Invalid Bluetooth address: $address")
+        } catch (_: IllegalArgumentException) {
             null
-        } ?: return
+        }
+        if (device == null) {
+            _state.value = _state.value.copy(error = "Watch BLE address is unavailable")
+            scheduleReconnect()
+            return
+        }
 
-        gatt?.close()
+        autoReconnect = true
+        reconnectAddress = address
+        handler.removeCallbacksAndMessages(null)
+        runCatching { gatt?.close() }
         gatt = null
         _state.value = _state.value.copy(
             connectingAddress = address,
@@ -189,10 +220,12 @@ class BleManager(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun disconnect() {
-        shouldReconnect = false
+        autoReconnect = false
+        reconnectAddress = null
+        handler.removeCallbacksAndMessages(null)
         stopScan()
         if (hasConnectPermission()) runCatching { gatt?.disconnect() }
-        gatt?.close()
+        if (hasConnectPermission()) runCatching { gatt?.close() }
         gatt = null
         _state.value = _state.value.copy(
             connectedName = null,
@@ -200,15 +233,30 @@ class BleManager(private val context: Context) {
             connectingAddress = null,
             heartRateBpm = null,
             services = emptyList(),
+            characteristics = emptyList(),
             error = null
         )
     }
 
     private fun scheduleReconnect() {
-        if (!shouldReconnect) return
+        if (!autoReconnect) return
         handler.removeCallbacksAndMessages(null)
         handler.postDelayed({
-            if (_state.value.connectedAddress == null) connectTargetWatch()
+            if (!autoReconnect || _state.value.connectedAddress != null) return@postDelayed
+            val address = reconnectAddress
+            if (address.isNullOrBlank()) {
+                startScan()
+            } else {
+                connect(address)
+                handler.postDelayed({
+                    if (autoReconnect && _state.value.connectedAddress == null) {
+                        if (hasConnectPermission()) runCatching { gatt?.close() }
+                        gatt = null
+                        _state.value = _state.value.copy(connectingAddress = null)
+                        startScan()
+                    }
+                }, DIRECT_CONNECT_FALLBACK_MS)
+            }
         }, RECONNECT_DELAY_MS)
     }
 
@@ -218,8 +266,10 @@ class BleManager(private val context: Context) {
             when {
                 status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED -> {
                     gatt = g
+                    reconnectAddress = g.device.address
+                    handler.removeCallbacksAndMessages(null)
                     _state.value = _state.value.copy(
-                        connectedName = g.device.name ?: "JARVIS Watch",
+                        connectedName = g.device.name ?: TARGET_WATCH_NAME,
                         connectedAddress = g.device.address,
                         connectingAddress = null,
                         error = null
@@ -236,7 +286,12 @@ class BleManager(private val context: Context) {
                         connectingAddress = null,
                         heartRateBpm = null,
                         services = emptyList(),
-                        error = if (status == BluetoothGatt.GATT_SUCCESS) null else "Watch disconnected (GATT $status); reconnecting"
+                        characteristics = emptyList(),
+                        error = if (status == BluetoothGatt.GATT_SUCCESS) {
+                            null
+                        } else {
+                            "Watch disconnected (GATT $status); reconnecting"
+                        }
                     )
                     scheduleReconnect()
                 }
@@ -258,26 +313,34 @@ class BleManager(private val context: Context) {
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                _state.value = _state.value.copy(error = "Connected, but service discovery failed: $status")
+                _state.value = _state.value.copy(error = "Watch service discovery failed: $status")
                 return
             }
 
-            val names = g.services.map { it.uuid.toString() }
-            _state.value = _state.value.copy(services = names, error = null)
+            val services = g.services.map { service -> service.uuid.toString() }
+            val characteristics = g.services.flatMap { service ->
+                service.characteristics.map { characteristic ->
+                    "${service.uuid}/${characteristic.uuid}/properties=${characteristic.properties}"
+                }
+            }
+            _state.value = _state.value.copy(
+                services = services,
+                characteristics = characteristics,
+                error = null
+            )
 
-            val hr = g.getService(HEART_RATE_SERVICE)
+            val heartRate = g.getService(HEART_RATE_SERVICE)
                 ?.getCharacteristic(HEART_RATE_MEASUREMENT)
                 ?: return
-
-            g.setCharacteristicNotification(hr, true)
-            hr.getDescriptor(CCCD)?.let { d ->
+            g.setCharacteristicNotification(heartRate, true)
+            heartRate.getDescriptor(CCCD)?.let { descriptor ->
                 if (android.os.Build.VERSION.SDK_INT >= 33) {
-                    g.writeDescriptor(d, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    g.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
                 } else {
                     @Suppress("DEPRECATION")
-                    d.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                     @Suppress("DEPRECATION")
-                    g.writeDescriptor(d)
+                    g.writeDescriptor(descriptor)
                 }
             }
         }
@@ -287,17 +350,7 @@ class BleManager(private val context: Context) {
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
-            if (characteristic.uuid == HEART_RATE_MEASUREMENT && value.isNotEmpty()) {
-                val flags = value[0].toInt()
-                val bpm = if ((flags and 0x01) == 0) {
-                    value.getOrNull(1)?.toInt()?.and(0xFF)
-                } else if (value.size >= 3) {
-                    ((value[2].toInt() and 0xFF) shl 8) or (value[1].toInt() and 0xFF)
-                } else {
-                    null
-                }
-                if (bpm != null) _state.value = _state.value.copy(heartRateBpm = bpm)
-            }
+            consumeCharacteristic(characteristic, value)
         }
 
         @Suppress("DEPRECATION")
@@ -305,7 +358,25 @@ class BleManager(private val context: Context) {
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic
         ) {
-            onCharacteristicChanged(gatt, characteristic, characteristic.value ?: return)
+            consumeCharacteristic(characteristic, characteristic.value ?: return)
+        }
+    }
+
+    private fun consumeCharacteristic(
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray
+    ) {
+        if (characteristic.uuid != HEART_RATE_MEASUREMENT || value.isEmpty()) return
+        val flags = value[0].toInt()
+        val bpm = if ((flags and 0x01) == 0) {
+            value.getOrNull(1)?.toInt()?.and(0xFF)
+        } else if (value.size >= 3) {
+            ((value[2].toInt() and 0xFF) shl 8) or (value[1].toInt() and 0xFF)
+        } else {
+            null
+        }
+        if (bpm != null) {
+            _state.value = _state.value.copy(heartRateBpm = bpm)
         }
     }
 }

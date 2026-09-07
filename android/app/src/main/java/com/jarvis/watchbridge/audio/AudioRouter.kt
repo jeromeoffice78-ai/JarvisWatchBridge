@@ -5,10 +5,6 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
 
-/**
- * Keeps the phone/tablet as the default audio path and allows a compatible
- * Bluetooth headset/watch audio endpoint to be selected when Android exposes it.
- */
 class AudioRouter(context: Context) {
     private val audio = context.getSystemService(AudioManager::class.java)
 
@@ -41,6 +37,17 @@ class AudioRouter(context: Context) {
         val route = audio.availableCommunicationDevices.firstOrNull { it.id == id } ?: return false
         audio.mode = AudioManager.MODE_IN_COMMUNICATION
         return audio.setCommunicationDevice(route)
+    }
+
+    fun setJarvisVolume(percent: Int = 100): Int {
+        val safe = percent.coerceIn(10, 100)
+        val musicMax = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val voiceMax = audio.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+        val music = ((musicMax * safe) / 100.0).toInt().coerceIn(1, musicMax)
+        val voice = ((voiceMax * safe) / 100.0).toInt().coerceIn(1, voiceMax)
+        audio.setStreamVolume(AudioManager.STREAM_MUSIC, music, 0)
+        audio.setStreamVolume(AudioManager.STREAM_VOICE_CALL, voice, 0)
+        return safe
     }
 
     fun clearRoute() {

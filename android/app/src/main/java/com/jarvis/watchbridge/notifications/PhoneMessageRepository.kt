@@ -1,5 +1,7 @@
 package com.jarvis.watchbridge.notifications
 
+import com.jarvis.watchbridge.auth.AuthStore
+
 import com.jarvis.watchbridge.BuildConfig
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -24,7 +26,7 @@ class PhoneMessageRepository {
         .build()
 
     fun latest(): PhoneMessage? {
-        val token = BuildConfig.JARVIS_SETUP_TOKEN.trim()
+        val token = AuthStore.requireToken()
         if (token.isBlank()) return null
 
         val base = BuildConfig.API_BASE_URL.trim().trimEnd('/')

@@ -9,27 +9,69 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        // Fresh package ID prevents Android from treating this Chairman build
-        // as an update to older test APKs signed by different ephemeral keys.
         applicationId = "com.jarvis.chairman"
         minSdk = 28
         targetSdk = 36
-        versionCode = 233
-        versionName = "2.3.3"
+        versionCode = 250
+        versionName = "2.5.0"
 
         val apiBaseUrl = System.getenv("JARVIS_API_BASE_URL")
             ?.takeIf { it.isNotBlank() }
             ?: "https://jarvis-watch-bridge-api.onrender.com/"
-        val setupToken = System.getenv("JARVIS_SETUP_TOKEN")
-            ?.takeIf { it.isNotBlank() }
-            ?: ""
 
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
-        buildConfigField("String", "JARVIS_SETUP_TOKEN", "\"$setupToken\"")
     }
 
-    buildFeatures { compose = true; buildConfig = true }
-    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+    val releaseKeystorePath = System.getenv("JARVIS_RELEASE_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
+    val releaseStorePassword = System.getenv("JARVIS_RELEASE_STORE_PASSWORD")?.takeIf { it.isNotBlank() }
+    val releaseKeyAlias = System.getenv("JARVIS_RELEASE_KEY_ALIAS")?.takeIf { it.isNotBlank() }
+    val releaseKeyPassword = System.getenv("JARVIS_RELEASE_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+    val releaseSigningReady = listOf(
+        releaseKeystorePath,
+        releaseStorePassword,
+        releaseKeyAlias,
+        releaseKeyPassword,
+    ).all { !it.isNullOrBlank() }
+
+    signingConfigs {
+        create("release") {
+            if (releaseSigningReady) {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
+        getByName("release") {
+            isDebuggable = false
+            isMinifyEnabled = false
+            isShrinkResources = false
+            if (releaseSigningReady) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
     kotlinOptions { jvmTarget = "17" }
 }
 
@@ -44,6 +86,8 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling:1.7.6")
 
     implementation("androidx.health.connect:connect-client:1.1.0")
+    implementation("androidx.work:work-runtime:2.11.2")
+    implementation("com.google.mediapipe:tasks-genai:0.10.35")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
 }

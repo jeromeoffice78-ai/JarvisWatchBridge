@@ -1,0 +1,85 @@
+name: Secure JARVIS Chairman Device Auth
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [production-hardening-v2.3.0]
+    paths:
+      - 'backend/auth.py'
+      - 'scripts/integrate_device_auth.py'
+      - 'scripts/remove_apk_admin_secret.py'
+      - 'android/app/src/main/java/com/jarvis/watchbridge/auth/**'
+      - 'android/app/src/main/java/com/jarvis/watchbridge/JarvisApplication.kt'
+      - 'android/app/src/main/java/com/jarvis/watchbridge/ui/ChairmanAccessPanel.kt'
+      - '.github/workflows/secure-device-auth.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  integrate-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: production-hardening-v2.3.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Wire signed device sessions into backend
+        run: python scripts/integrate_device_auth.py
+      - name: Remove reusable admin secret from Android
+        run: python scripts/remove_apk_admin_secret.py
+      - name: Verify authentication boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'app.include_router(auth_router)' backend/main.py
+          grep -Fq 'require_access(token)' backend/main.py
+          grep -Fq 'require_access(token)' backend/team.py
+          grep -Fq 'require_access(token)' backend/knowledge.py
+          grep -Fq 'require_access(token)' backend/crawler.py
+          grep -Fq 'ChairmanAccessPanel()' android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+          grep -Fq 'android:name=".JarvisApplication"' android/app/src/main/AndroidManifest.xml
+          grep -R -Fq 'AuthStore.requireToken()' android/app/src/main/java
+          if grep -R -n -F 'BuildConfig.JARVIS_SETUP_TOKEN' android/app/src/main/java android/app/build.gradle.kts; then
+            echo 'Reusable admin token reference remains in Android source' >&2
+            exit 1
+          fi
+          if grep -n -F 'JARVIS_SETUP_TOKEN' android/app/build.gradle.kts; then
+            echo 'Admin secret is still wired into APK build config' >&2
+            exit 1
+          fi
+          python -m py_compile backend/auth.py backend/main.py backend/team.py backend/knowledge.py backend/crawler.py
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Compile secure release source
+        working-directory: android
+        env:
+          JARVIS_API_BASE_URL: https://jarvis-watch-bridge-api.onrender.com/
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+          gradle :app:compileReleaseKotlin --stacktrace
+      - name: Commit generated secure integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Secure device authentication already current.'
+            exit 0
+          fi
+          git config user.name 'jarvis-production-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/main.py backend/team.py backend/knowledge.py backend/crawler.py android/app/build.gradle.kts android/app/src/main
+          git commit -m 'Replace embedded admin secret with Chairman device sessions [skip ci]'
+          git push origin HEAD:production-hardening-v2.3.0

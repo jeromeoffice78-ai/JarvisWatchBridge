@@ -36,7 +36,7 @@ class JarvisVoiceController(private val context: Context) : TextToSpeech.OnInitL
     }
 
     fun availableRoutes(): List<JarvisAudioRoute> {
-        val hasBluetooth = audioManager.getDevices(AudioManager.GET_DEVICES_ALL).any {
+        val hasBluetooth = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
             it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
                 it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
                 it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER ||
