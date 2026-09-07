@@ -14,12 +14,12 @@ android {
         applicationId = "com.jarvis.chairman"
         minSdk = 28
         targetSdk = 36
-        versionCode = 232
-        versionName = "2.3.2"
+        versionCode = 233
+        versionName = "2.3.3"
 
         val apiBaseUrl = System.getenv("JARVIS_API_BASE_URL")
             ?.takeIf { it.isNotBlank() }
-            ?: "https://jarvis-native-watch-bridge.floot.app/"
+            ?: "https://jarvis-watch-bridge-api.onrender.com/"
         val setupToken = System.getenv("JARVIS_SETUP_TOKEN")
             ?.takeIf { it.isNotBlank() }
             ?: ""
