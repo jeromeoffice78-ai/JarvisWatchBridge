@@ -46,7 +46,7 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-36" "build-tools;35.0.0"
 
-      - name: Build JARVIS Render 2.5 APK
+      - name: Build JARVIS Render 2.5.1 APK
         working-directory: android
         env:
           JARVIS_SETUP_TOKEN: ${{ secrets.JARVIS_SETUP_TOKEN }}
@@ -57,40 +57,40 @@ jobs:
           APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -1)"
           test -f "$APK"
           mkdir -p ../dist
-          cp "$APK" ../dist/JARVIS-RENDER-2.5.0.apk
+          cp "$APK" ../dist/JARVIS-RENDER-2.5.1.apk
 
           APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)"
           AAPT="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt | sort -V | tail -1)"
-          "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-RENDER-2.5.0.apk
-          "$AAPT" dump badging ../dist/JARVIS-RENDER-2.5.0.apk > /tmp/badging.txt
-          "$AAPT" dump permissions ../dist/JARVIS-RENDER-2.5.0.apk > /tmp/permissions.txt
+          "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-RENDER-2.5.1.apk
+          "$AAPT" dump badging ../dist/JARVIS-RENDER-2.5.1.apk > /tmp/badging.txt
+          "$AAPT" dump permissions ../dist/JARVIS-RENDER-2.5.1.apk > /tmp/permissions.txt
           cat /tmp/badging.txt
           cat /tmp/permissions.txt
-          grep -Fq "package: name='com.jarvis.chairman.render250'" /tmp/badging.txt
-          grep -Fq "versionCode='250'" /tmp/badging.txt
-          grep -Fq "versionName='2.5.0'" /tmp/badging.txt
-          grep -Fq "application-label:'JARVIS Render 2.5'" /tmp/badging.txt
+          grep -Fq "package: name='com.jarvis.chairman.render251'" /tmp/badging.txt
+          grep -Fq "versionCode='251'" /tmp/badging.txt
+          grep -Fq "versionName='2.5.1'" /tmp/badging.txt
+          grep -Fq "application-label:'JARVIS Render 2.5.1'" /tmp/badging.txt
           for permission in android.permission.INTERNET android.permission.RECORD_AUDIO android.permission.BLUETOOTH_SCAN android.permission.BLUETOOTH_CONNECT android.permission.FOREGROUND_SERVICE_MICROPHONE; do
             grep -Fq "$permission" /tmp/permissions.txt || { echo "Missing required permission: $permission" >&2; exit 1; }
           done
-          sha256sum ../dist/JARVIS-RENDER-2.5.0.apk > ../dist/SHA256SUMS.txt
+          sha256sum ../dist/JARVIS-RENDER-2.5.1.apk > ../dist/SHA256SUMS.txt
 
-      - name: Publish JARVIS Render 2.5 release
+      - name: Publish JARVIS Render 2.5.1 release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          TAG="jarvis-render-v2.5.0-run-${GITHUB_RUN_ID}"
+          TAG="jarvis-render-v2.5.1-run-${GITHUB_RUN_ID}"
           gh release create "$TAG" \
-            dist/JARVIS-RENDER-2.5.0.apk \
+            dist/JARVIS-RENDER-2.5.1.apk \
             dist/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
-            --title "JARVIS Render 2.5.0" \
-            --notes "Unmistakable Render-only JARVIS build. Uses unique package com.jarvis.chairman.render250, visible app label JARVIS Render 2.5, verifies the live Render bridge and OpenAI configuration before packaging, preserves BLE watch auto-connect/reconnect, and has no CloudFront/Floot backend fallback."
+            --title "JARVIS Render 2.5.1" \
+            --notes "Watch-connect repair build. Keeps the working Render/OpenAI chat path, prioritizes the previously successful watch BLE address 15:4D:A4:66:5E:6E, scans before direct GATT connection, recognizes JARVIS Watch/V19/Laxasfit names, and times out stale GATT attempts so scanning can recover automatically."
 
       - uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-RENDER-2.5.0
+          name: JARVIS-RENDER-2.5.1
           path: dist/*
           retention-days: 30
