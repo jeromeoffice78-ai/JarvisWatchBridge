@@ -10,11 +10,11 @@ android {
 
     defaultConfig {
         // Unique package ID prevents Android from launching older repair builds by mistake.
-        applicationId = "com.jarvis.chairman.render252"
+        applicationId = "com.jarvis.chairman.render253"
         minSdk = 28
         targetSdk = 36
-        versionCode = 252
-        versionName = "2.5.2"
+        versionCode = 253
+        versionName = "2.5.3"
 
         // Render-only FastAPI backend. No CloudFront/Floot fallback exists in this build.
         buildConfigField(
