@@ -9,16 +9,14 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        // Isolated package ID guarantees this Render-backed build cannot be
-        // confused with or replaced by older Floot/CloudFront test installs.
+        // Isolated package ID prevents confusion with the older CloudFront/Floot test installs.
         applicationId = "com.jarvis.chairman.render"
         minSdk = 28
         targetSdk = 36
-        versionCode = 240
-        versionName = "2.4.0"
+        versionCode = 241
+        versionName = "2.4.1"
 
-        // Deliberately hard-coded to the dedicated FastAPI service. This build
-        // has no runtime or CI fallback to Floot/CloudFront.
+        // Dedicated FastAPI backend. No runtime fallback to the old CloudFront/Floot frontend.
         buildConfigField(
             "String",
             "API_BASE_URL",
