@@ -178,7 +178,7 @@ class BleManager(private val context: Context) {
         // not connect promptly, abandon that attempt and scan by the known watch names as fallback.
         handler.postDelayed({
             if (autoReconnect && _state.value.connectedAddress == null) {
-                runCatching { gatt?.close() }
+                if (hasConnectPermission()) runCatching { gatt?.close() }
                 gatt = null
                 _state.value = _state.value.copy(connectingAddress = null)
                 startScan()
@@ -225,7 +225,7 @@ class BleManager(private val context: Context) {
         handler.removeCallbacksAndMessages(null)
         stopScan()
         if (hasConnectPermission()) runCatching { gatt?.disconnect() }
-        runCatching { gatt?.close() }
+        if (hasConnectPermission()) runCatching { gatt?.close() }
         gatt = null
         _state.value = _state.value.copy(
             connectedName = null,
@@ -250,7 +250,7 @@ class BleManager(private val context: Context) {
                 connect(address)
                 handler.postDelayed({
                     if (autoReconnect && _state.value.connectedAddress == null) {
-                        runCatching { gatt?.close() }
+                        if (hasConnectPermission()) runCatching { gatt?.close() }
                         gatt = null
                         _state.value = _state.value.copy(connectingAddress = null)
                         startScan()
