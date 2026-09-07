@@ -7,7 +7,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from openai import OpenAI
 
-app = FastAPI(title="JARVIS Watch Bridge API", version="0.5.1")
+app = FastAPI(title="JARVIS Watch Bridge API", version="0.5.2")
 VAPI_BASE = "https://api.vapi.ai"
 JARVIS_PHONE_NUMBER = "+15318679252"
 JARVIS_ASSISTANT_NAMES = ("JARVIS Phone Receptionist v2", "JARVIS Phone Receptionist")
@@ -173,13 +173,31 @@ def _message_from_call(call: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.on_event("startup")
-async def auto_configure_vapi() -> None:
+async def startup_checks() -> None:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    print(f"JARVIS_OPENAI_CONFIGURED={bool(api_key)}", flush=True)
+    if api_key:
+        try:
+            test_client = OpenAI(api_key=api_key, timeout=10.0)
+            test_client.responses.create(
+                model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+                input="Reply with OK.",
+                max_output_tokens=4,
+            )
+            print("JARVIS_OPENAI_SELFTEST=ok", flush=True)
+        except Exception as exc:
+            status = getattr(exc, "status_code", None)
+            print(
+                f"JARVIS_OPENAI_SELFTEST=failed type={type(exc).__name__} status={status}",
+                flush=True,
+            )
+
     if not os.getenv("VAPI_API_KEY", "").strip():
         return
     try:
         await _bind_existing_phone()
     except Exception as exc:
-        print(f"JARVIS Vapi auto-bind warning: {exc}")
+        print(f"JARVIS Vapi auto-bind warning: {type(exc).__name__}", flush=True)
 
 
 @app.get("/health")
@@ -187,7 +205,7 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "jarvis-watch-bridge",
-        "version": "0.5.1",
+        "version": "0.5.2",
         "openai_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
         "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
     }
@@ -215,7 +233,7 @@ def chat(req: ChatRequest) -> ChatResponse:
             input=f"Context:\n{context}\n\nUser:\n{req.message}",
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI service error: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"AI service error: {type(exc).__name__}") from exc
     return ChatResponse(reply=response.output_text.strip())
 
 
