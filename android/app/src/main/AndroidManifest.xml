@@ -19,7 +19,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="JARVIS Render 2.5.3"
+        android:label="JARVIS Render 2.5.4"
         android:theme="@style/Theme.JarvisWatchBridge">
         <activity
             android:name=".MainActivity"
