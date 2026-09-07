@@ -7,7 +7,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from openai import OpenAI
 
-app = FastAPI(title="JARVIS Watch Bridge API", version="0.5.0")
+app = FastAPI(title="JARVIS Watch Bridge API", version="0.5.1")
 VAPI_BASE = "https://api.vapi.ai"
 JARVIS_PHONE_NUMBER = "+15318679252"
 JARVIS_ASSISTANT_NAMES = ("JARVIS Phone Receptionist v2", "JARVIS Phone Receptionist")
@@ -183,8 +183,14 @@ async def auto_configure_vapi() -> None:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "service": "jarvis-watch-bridge", "version": "0.5.0"}
+def health() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "service": "jarvis-watch-bridge",
+        "version": "0.5.1",
+        "openai_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+        "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+    }
 
 
 @app.post("/chat", response_model=ChatResponse)
