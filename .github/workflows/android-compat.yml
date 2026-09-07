@@ -39,7 +39,7 @@ jobs:
       - name: Build Chairman JARVIS APK
         working-directory: android
         env:
-          JARVIS_API_BASE_URL: https://jarvis-native-watch-bridge.floot.app/
+          JARVIS_API_BASE_URL: https://jarvis-watch-bridge-api.onrender.com/
           JARVIS_SETUP_TOKEN: ${{ secrets.JARVIS_SETUP_TOKEN }}
         shell: bash
         run: |
@@ -48,22 +48,22 @@ jobs:
           APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -1)"
           test -f "$APK"
           mkdir -p ../dist
-          cp "$APK" ../dist/JARVIS-CHAIRMAN-v2.3.2.apk
+          cp "$APK" ../dist/JARVIS-CHAIRMAN-v2.3.3.apk
 
           APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)"
           AAPT="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt | sort -V | tail -1)"
-          "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-CHAIRMAN-v2.3.2.apk
-          "$AAPT" dump badging ../dist/JARVIS-CHAIRMAN-v2.3.2.apk > /tmp/badging.txt
-          "$AAPT" dump permissions ../dist/JARVIS-CHAIRMAN-v2.3.2.apk > /tmp/permissions.txt
+          "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-CHAIRMAN-v2.3.3.apk
+          "$AAPT" dump badging ../dist/JARVIS-CHAIRMAN-v2.3.3.apk > /tmp/badging.txt
+          "$AAPT" dump permissions ../dist/JARVIS-CHAIRMAN-v2.3.3.apk > /tmp/permissions.txt
           cat /tmp/badging.txt
           cat /tmp/permissions.txt
           grep -Fq "package: name='com.jarvis.chairman'" /tmp/badging.txt
-          grep -Fq "versionCode='232'" /tmp/badging.txt
-          grep -Fq "versionName='2.3.2'" /tmp/badging.txt
+          grep -Fq "versionCode='233'" /tmp/badging.txt
+          grep -Fq "versionName='2.3.3'" /tmp/badging.txt
           for permission in android.permission.INTERNET android.permission.RECORD_AUDIO android.permission.BLUETOOTH_SCAN android.permission.BLUETOOTH_CONNECT android.permission.FOREGROUND_SERVICE_MICROPHONE; do
             grep -Fq "$permission" /tmp/permissions.txt || { echo "Missing required permission: $permission" >&2; exit 1; }
           done
-          sha256sum ../dist/JARVIS-CHAIRMAN-v2.3.2.apk > ../dist/SHA256SUMS.txt
+          sha256sum ../dist/JARVIS-CHAIRMAN-v2.3.3.apk > ../dist/SHA256SUMS.txt
 
       - name: Publish Chairman release
         env:
@@ -71,16 +71,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="jarvis-chairman-v2.3.2-run-${GITHUB_RUN_ID}"
+          TAG="jarvis-chairman-v2.3.3-run-${GITHUB_RUN_ID}"
           gh release create "$TAG" \
-            dist/JARVIS-CHAIRMAN-v2.3.2.apk \
+            dist/JARVIS-CHAIRMAN-v2.3.3.apk \
             dist/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
-            --title "JARVIS Chairman Android v2.3.2" \
-            --notes "API gateway repair build. Routes JARVIS chat and phone-message requests through Floot's /_api gateway instead of posting to static CloudFront frontend routes. Retains automatic V19/Laxasfit BLE connection and reconnect behavior from v2.3.1."
+            --title "JARVIS Chairman Android v2.3.3" \
+            --notes "Backend migration build. Removes the Floot/CloudFront API path that returned HTTP 403 and sends chat directly to the Render FastAPI service at /chat. Phone-message polling now uses the Render /phone/messages endpoint. BLE auto-connect/reconnect remains enabled."
 
       - uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-CHAIRMAN-v2.3.2
+          name: JARVIS-CHAIRMAN-v2.3.3
           path: dist/*
           retention-days: 30
