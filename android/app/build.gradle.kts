@@ -9,27 +9,33 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        // Fresh package ID prevents Android from treating this Chairman build
-        // as an update to older test APKs signed by different ephemeral keys.
-        applicationId = "com.jarvis.chairman"
+        // Isolated package ID guarantees this Render-backed build cannot be
+        // confused with or replaced by older Floot/CloudFront test installs.
+        applicationId = "com.jarvis.chairman.render"
         minSdk = 28
         targetSdk = 36
-        versionCode = 233
-        versionName = "2.3.3"
+        versionCode = 240
+        versionName = "2.4.0"
 
-        val apiBaseUrl = System.getenv("JARVIS_API_BASE_URL")
-            ?.takeIf { it.isNotBlank() }
-            ?: "https://jarvis-watch-bridge-api.onrender.com/"
+        // Deliberately hard-coded to the dedicated FastAPI service. This build
+        // has no runtime or CI fallback to Floot/CloudFront.
+        buildConfigField(
+            "String",
+            "API_BASE_URL",
+            "\"https://jarvis-watch-bridge-api.onrender.com/\""
+        )
+
         val setupToken = System.getenv("JARVIS_SETUP_TOKEN")
             ?.takeIf { it.isNotBlank() }
             ?: ""
-
-        buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
         buildConfigField("String", "JARVIS_SETUP_TOKEN", "\"$setupToken\"")
     }
 
     buildFeatures { compose = true; buildConfig = true }
-    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
     kotlinOptions { jvmTarget = "17" }
 }
 
