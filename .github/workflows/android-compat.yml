@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   verify-production:
@@ -59,17 +60,108 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -n "${KEYSTORE_B64:-}" && -n "${STORE_PASSWORD:-}" && -n "${KEY_ALIAS:-}" && -n "${KEY_PASSWORD:-}" ]]; then
-            KEYSTORE_PATH="$RUNNER_TEMP/jarvis-watch-bridge-release.jks"
-            printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE_PATH"
-            chmod 600 "$KEYSTORE_PATH"
-            keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+
+          install_signing_material() {
+            local keystore_b64="$1"
+            local store_password="$2"
+            local key_alias="$3"
+            local key_password="$4"
+            local keystore_path="$RUNNER_TEMP/jarvis-watch-bridge-release.jks"
+
+            echo "::add-mask::$store_password"
+            echo "::add-mask::$key_alias"
+            echo "::add-mask::$key_password"
+            printf '%s' "$keystore_b64" | base64 --decode > "$keystore_path"
+            chmod 600 "$keystore_path"
+            keytool -list -keystore "$keystore_path" -storepass "$store_password" -alias "$key_alias" >/dev/null
+
+            echo "JARVIS_RELEASE_KEYSTORE_PATH=$keystore_path" >> "$GITHUB_ENV"
+            echo "JARVIS_RELEASE_STORE_PASSWORD=$store_password" >> "$GITHUB_ENV"
+            echo "JARVIS_RELEASE_KEY_ALIAS=$key_alias" >> "$GITHUB_ENV"
+            echo "JARVIS_RELEASE_KEY_PASSWORD=$key_password" >> "$GITHUB_ENV"
             echo "ready=true" >> "$GITHUB_OUTPUT"
-            echo "JARVIS_RELEASE_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Stable signing secrets are not configured; CI will produce an unsigned release candidate only."
+          }
+
+          if [[ -n "${KEYSTORE_B64:-}" && -n "${STORE_PASSWORD:-}" && -n "${KEY_ALIAS:-}" && -n "${KEY_PASSWORD:-}" ]]; then
+            install_signing_material "$KEYSTORE_B64" "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD"
+            exit 0
           fi
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" || "$GITHUB_EVENT_NAME" != "push" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Feature/PR build: producing an unsigned release candidate; permanent signing is required only on main."
+            exit 0
+          fi
+
+          OIDC_JSON="$RUNNER_TEMP/jarvis-oidc.json"
+          curl --fail --silent --show-error \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=jarvis-signing" \
+            -o "$OIDC_JSON"
+          OIDC_TOKEN="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["value"])' "$OIDC_JSON")"
+          echo "::add-mask::$OIDC_TOKEN"
+          rm -f "$OIDC_JSON"
+
+          SIGNING_JSON="$RUNNER_TEMP/jarvis-signing.json"
+          broker_ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              -H "Authorization: Bearer $OIDC_TOKEN" \
+              -H 'Accept: application/json' \
+              -X POST \
+              https://jarvis-watch-bridge-api.onrender.com/auth/ci/signing-material \
+              -o "$SIGNING_JSON"; then
+              broker_ready=true
+              break
+            fi
+            sleep 10
+          done
+
+          if [[ "$broker_ready" != "true" ]]; then
+            echo "Production signing broker was not available; refusing to publish an unsigned main release." >&2
+            exit 1
+          fi
+
+          python - "$SIGNING_JSON" "$GITHUB_ENV" "$GITHUB_OUTPUT" <<'PY'
+          import base64
+          import json
+          import os
+          import subprocess
+          import sys
+
+          response_path, env_path, output_path = sys.argv[1:]
+          data = json.load(open(response_path, encoding="utf-8"))
+          required = ["keystore_b64", "store_password", "key_alias", "key_password"]
+          for key in required:
+              if not isinstance(data.get(key), str) or not data[key]:
+                  raise SystemExit(f"Signing broker response missing {key}")
+
+          keystore_path = os.path.join(os.environ["RUNNER_TEMP"], "jarvis-watch-bridge-release.jks")
+          with open(keystore_path, "wb") as handle:
+              handle.write(base64.b64decode(data["keystore_b64"], validate=True))
+          os.chmod(keystore_path, 0o600)
+
+          for key in ("store_password", "key_alias", "key_password"):
+              print(f"::add-mask::{data[key]}")
+
+          subprocess.run(
+              [
+                  "keytool", "-list", "-keystore", keystore_path,
+                  "-storepass", data["store_password"], "-alias", data["key_alias"],
+              ],
+              check=True,
+              stdout=subprocess.DEVNULL,
+          )
+
+          with open(env_path, "a", encoding="utf-8") as env_file:
+              env_file.write(f"JARVIS_RELEASE_KEYSTORE_PATH={keystore_path}\n")
+              env_file.write(f"JARVIS_RELEASE_STORE_PASSWORD={data['store_password']}\n")
+              env_file.write(f"JARVIS_RELEASE_KEY_ALIAS={data['key_alias']}\n")
+              env_file.write(f"JARVIS_RELEASE_KEY_PASSWORD={data['key_password']}\n")
+          with open(output_path, "a", encoding="utf-8") as output_file:
+              output_file.write("ready=true\n")
+          PY
+          rm -f "$SIGNING_JSON"
 
       - name: Verify source capability contract
         shell: bash
@@ -80,25 +172,43 @@ jobs:
           test -f android/app/src/main/java/com/jarvis/watchbridge/control/JarvisAccessibilityService.kt
           test -f android/app/src/main/java/com/jarvis/watchbridge/control/JarvisRemoteCommandService.kt
           test -f android/app/src/main/java/com/jarvis/watchbridge/security/DeviceSecurityScanner.kt
+          test -f android/app/src/main/java/com/jarvis/watchbridge/auth/AuthStore.kt
+          test -f backend/signing.py
           grep -Fq 'RecognizerIntent.ACTION_RECOGNIZE_SPEECH' android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
           grep -Fq 'connectTargetWatch' android/app/src/main/java/com/jarvis/watchbridge/ble/BleManager.kt
           grep -Fq 'Take Over Watch Connection' android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
           grep -Fq 'Accessibility control disclosure' android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+          grep -Fq 'AuthStore.requireToken()' android/app/src/main/java/com/jarvis/watchbridge/ai/ChatRepository.kt
           grep -Fq 'x-jarvis-admin-token' android/app/src/main/java/com/jarvis/watchbridge/ai/ChatRepository.kt
           grep -Fq 'status") != "approved"' android/app/src/main/java/com/jarvis/watchbridge/control/JarvisRemoteCommandService.kt
+          if grep -R -F 'BuildConfig.JARVIS_SETUP_TOKEN' android/app/src/main/java; then
+            echo 'Reusable setup/admin token reference found in Android source.' >&2
+            exit 1
+          fi
+          if grep -Fq 'JARVIS_SETUP_TOKEN' android/app/build.gradle.kts; then
+            echo 'Reusable setup/admin token BuildConfig field found in Android build.' >&2
+            exit 1
+          fi
 
       - name: Compile, test and lint Android release
         working-directory: android
         env:
           JARVIS_API_BASE_URL: https://jarvis-watch-bridge-api.onrender.com/
-          JARVIS_SETUP_TOKEN: ${{ secrets.JARVIS_SETUP_TOKEN }}
-          JARVIS_RELEASE_STORE_PASSWORD: ${{ secrets.JARVIS_RELEASE_STORE_PASSWORD }}
-          JARVIS_RELEASE_KEY_ALIAS: ${{ secrets.JARVIS_RELEASE_KEY_ALIAS }}
-          JARVIS_RELEASE_KEY_PASSWORD: ${{ secrets.JARVIS_RELEASE_KEY_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
           gradle :app:testReleaseUnitTest :app:lintRelease :app:assembleRelease :app:bundleRelease --stacktrace
+
+      - name: Upload lint diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-v2.5.0-lint-diagnostics
+          path: |
+            android/app/build/reports/lint-results-*
+            android/app/build/intermediates/lint_intermediate_text_report/**
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Verify production APK contract
         working-directory: android
@@ -158,19 +268,27 @@ jobs:
             echo "UNSIGNED_RELEASE_CANDIDATE" > ../dist/SIGNING-STATUS.txt
           fi
 
+          if [[ "$GITHUB_REF" == "refs/heads/main" && "${{ steps.signing.outputs.ready }}" != "true" ]]; then
+            echo "Main release is not signed with the permanent production key." >&2
+            exit 1
+          fi
+
           sha256sum ../dist/JARVIS-Watch-Bridge-v2.5.0-FULL-RELEASE.apk \
                     ../dist/JARVIS-Watch-Bridge-v2.5.0-FULL-RELEASE.aab \
                     > ../dist/SHA256SUMS.txt
 
-      - name: Test backend device-control contract
+      - name: Test backend authentication and device-control contract
+        working-directory: backend
         shell: bash
         env:
           JARVIS_SETUP_TOKEN: ci-test-token
+          JARVIS_DEVICE_AUTH_SECRET: ci-device-auth-secret-that-is-longer-than-thirty-two-characters
+          JARVIS_ENROLLMENT_CODE: ci-chairman-enrollment-250
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check -r backend/requirements.txt >/dev/null
-          python -m py_compile backend/main.py
-          python -m uvicorn backend.main:app --host 127.0.0.1 --port 8765 >/tmp/jarvis-api.log 2>&1 &
+          python -m pip install --disable-pip-version-check -r requirements.txt >/dev/null
+          python -m py_compile main.py auth.py signing.py team.py knowledge.py crawler.py
+          python -m uvicorn main:app --host 127.0.0.1 --port 8765 >/tmp/jarvis-api.log 2>&1 &
           API_PID=$!
           trap 'kill $API_PID || true' EXIT
           for i in {1..30}; do
@@ -179,12 +297,24 @@ jobs:
           done
           grep -Fq '"status":"ok"' /tmp/health.json
 
-          AUTH='x-jarvis-admin-token: ci-test-token'
-          curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+          STATUS="$(curl -sS -o /tmp/no-oidc.json -w '%{http_code}' -X POST http://127.0.0.1:8765/auth/ci/signing-material)"
+          [[ "$STATUS" == "401" ]] || { cat /tmp/no-oidc.json; exit 1; }
+
+          curl -fsS -H 'Content-Type: application/json' \
+            -d '{"pairingCode":"ci-chairman-enrollment-250","deviceId":"android-ci-chairman","deviceName":"CI Chairman Device"}' \
+            http://127.0.0.1:8765/auth/enroll > /tmp/enroll.json
+          DEVICE_TOKEN="$(python -c 'import json; print(json.load(open("/tmp/enroll.json"))["token"])')"
+          echo "::add-mask::$DEVICE_TOKEN"
+          DEVICE_AUTH="x-jarvis-admin-token: $DEVICE_TOKEN"
+          curl -fsS -H "$DEVICE_AUTH" http://127.0.0.1:8765/auth/session > /tmp/session.json
+          grep -Fq '"scope":"chairman"' /tmp/session.json
+
+          curl -fsS -H "$DEVICE_AUTH" -H 'Content-Type: application/json' \
             -d '{"deviceId":"android-ci","deviceName":"CI Android","deviceModel":"CI","preferredRole":"primary","connected":true,"watchBleAddress":"41:42:69:41:49:D5"}' \
             http://127.0.0.1:8765/device/register > /tmp/register.json
           grep -Fq '"role":"primary"' /tmp/register.json
 
+          AUTH='x-jarvis-admin-token: ci-test-token'
           curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
             -d '{"deviceId":"android-ci","action":"volume_set","payload":{"percent":75}}' \
             http://127.0.0.1:8765/device/command > /tmp/command.json
@@ -220,4 +350,4 @@ jobs:
             dist/SIGNING-STATUS.txt \
             --repo "$GITHUB_REPOSITORY" \
             --title "JARVIS Watch Bridge v2.5.0 Production" \
-            --notes "Full Chairman production build: AI chat, BLE watch host/reconnect, Health Connect, voice/wake service, TTS/audio routing, phone alerts, multi-device takeover, mood adaptation, visible approved remote device controls, and device security inventory."
+            --notes "Full Chairman production build: AI chat, BLE watch host/reconnect, Health Connect, voice/wake service, TTS/audio routing, phone alerts, multi-device takeover, mood adaptation, visible approved remote device controls, device security inventory, hybrid/local brain, cloud knowledge learning, expert team, secure Chairman device sessions, and OIDC-protected permanent release signing."
