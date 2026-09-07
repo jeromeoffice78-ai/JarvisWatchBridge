@@ -1,0 +1,36 @@
+name: Integrate JARVIS Watch Auto Connect
+
+on:
+  push:
+    branches: [production-hardening-v2.3.0]
+    paths:
+      - 'scripts/integrate_watch_autoconnect.py'
+      - '.github/workflows/integrate-watch-autoconnect.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: production-hardening-v2.3.0
+
+      - name: Apply idempotent MainActivity integration
+        run: python scripts/integrate_watch_autoconnect.py
+
+      - name: Commit integrated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt; then
+            echo 'Watch auto-connect integration already present.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add android/app/src/main/java/com/jarvis/watchbridge/MainActivity.kt
+          git commit -m 'Integrate role-aware watch auto-connect UI'
+          git push origin HEAD:production-hardening-v2.3.0
