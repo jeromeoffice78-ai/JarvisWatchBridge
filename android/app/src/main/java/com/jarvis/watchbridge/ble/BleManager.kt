@@ -70,9 +70,11 @@ class BleManager(private val context: Context) {
 
         private const val MODERN_SCAN_MS = 6_000L
         private const val LEGACY_SCAN_MS = 6_000L
-        private const val DIRECT_CONNECT_TIMEOUT_MS = 10_000L
-        private const val AUTO_CONNECT_TIMEOUT_MS = 18_000L
+        private const val DIRECT_CONNECT_TIMEOUT_MS = 15_000L
+        private const val AUTO_CONNECT_TIMEOUT_MS = 45_000L
         private const val RECONNECT_DELAY_MS = 4_000L
+        private const val CONNECTION_PROBE_MS = 1_500L
+        private const val CONNECTION_PROBE_COUNT = 24
 
         val HEART_RATE_SERVICE: UUID = UUID.fromString("0000180d-0000-1000-8000-00805f9b34fb")
         val HEART_RATE_MEASUREMENT: UUID = UUID.fromString("00002a37-0000-1000-8000-00805f9b34fb")
@@ -127,9 +129,20 @@ class BleManager(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
+    private fun isSystemGattConnected(address: String): Boolean {
+        if (!hasConnectPermission()) return false
+        return runCatching {
+            bluetoothManager
+                ?.getConnectedDevices(BluetoothProfile.GATT)
+                ?.any { device -> device.address.equals(address, ignoreCase = true) }
+                ?: false
+        }.getOrDefault(false)
+    }
+
+    @SuppressLint("MissingPermission")
     private fun watchAlreadyHeldByAnotherGattClient(): BluetoothDevice? {
         if (!hasConnectPermission()) return null
-        if (_state.value.connectedAddress != null) return null
+        if (_state.value.connectedAddress != null || gatt != null) return null
         return runCatching {
             bluetoothManager
                 ?.getConnectedDevices(BluetoothProfile.GATT)
@@ -287,6 +300,13 @@ class BleManager(private val context: Context) {
         }
         if (_state.value.connectedAddress != null) return
 
+        val currentGatt = gatt
+        val currentAddress = _state.value.connectingAddress
+        if (currentGatt != null && currentAddress != null && isSystemGattConnected(currentAddress)) {
+            adoptConnectedGatt(currentGatt, "Android GATT verification")
+            return
+        }
+
         watchAlreadyHeldByAnotherGattClient()?.let { held ->
             _state.value = _state.value.copy(
                 scanning = false,
@@ -390,10 +410,16 @@ class BleManager(private val context: Context) {
             device.connectGatt(context, candidate.autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
         }
         gatt = newGatt
+        scheduleConnectionProbe(newGatt, candidate.address, 0)
 
         val timeout = if (candidate.autoConnect) AUTO_CONNECT_TIMEOUT_MS else DIRECT_CONNECT_TIMEOUT_MS
         handler.postDelayed({
             if (gatt === newGatt && _state.value.connectedAddress == null) {
+                if (isSystemGattConnected(candidate.address)) {
+                    adoptConnectedGatt(newGatt, "Android GATT timeout verification")
+                    return@postDelayed
+                }
+
                 gatt = null
                 runCatching { newGatt.disconnect() }
                 runCatching { newGatt.close() }
@@ -401,6 +427,42 @@ class BleManager(private val context: Context) {
                 tryNextCandidate("timeout on ${candidate.address}")
             }
         }, timeout)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun scheduleConnectionProbe(connection: BluetoothGatt, address: String, attempt: Int) {
+        if (attempt >= CONNECTION_PROBE_COUNT) return
+        handler.postDelayed({
+            if (_state.value.connectedAddress != null || gatt !== connection) return@postDelayed
+
+            if (isSystemGattConnected(address)) {
+                adoptConnectedGatt(connection, "Android GATT state")
+            } else {
+                scheduleConnectionProbe(connection, address, attempt + 1)
+            }
+        }, CONNECTION_PROBE_MS)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun adoptConnectedGatt(connection: BluetoothGatt, source: String) {
+        gatt = connection
+        attemptQueue.clear()
+        scanGeneration += 1
+        stopActiveScans()
+        handler.removeCallbacks(reconnectRunnable)
+
+        val name = runCatching { connection.device.name }.getOrNull() ?: "JARVIS Watch"
+        val address = connection.device.address
+        _state.value = _state.value.copy(
+            scanning = false,
+            connectedName = name,
+            connectedAddress = address,
+            connectingAddress = null,
+            error = null
+        )
+
+        runCatching { connection.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
+        runCatching { connection.discoverServices() }
     }
 
     @SuppressLint("MissingPermission")
@@ -438,29 +500,30 @@ class BleManager(private val context: Context) {
 
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
-        override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            if (gatt !== g) {
-                runCatching { g.close() }
-                return
+        override fun onConnectionStateChange(connection: BluetoothGatt, status: Int, newState: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
+                if (gatt !== connection && _state.value.connectedAddress == null) {
+                    val name = runCatching { connection.device.name }.getOrNull()
+                    if (isJarvisTarget(name, connection.device.address)) {
+                        adoptConnectedGatt(connection, "GATT callback")
+                        return
+                    }
+                }
+
+                if (gatt === connection) {
+                    adoptConnectedGatt(connection, "GATT callback")
+                    return
+                }
             }
 
-            if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
-                attemptQueue.clear()
-                _state.value = _state.value.copy(
-                    scanning = false,
-                    connectedName = g.device.name ?: "JARVIS Watch",
-                    connectedAddress = g.device.address,
-                    connectingAddress = null,
-                    error = null
-                )
-                runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
-                g.discoverServices()
+            if (gatt !== connection) {
+                runCatching { connection.close() }
                 return
             }
 
             if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
                 gatt = null
-                runCatching { g.close() }
+                runCatching { connection.close() }
                 _state.value = _state.value.copy(
                     connectedName = null,
                     connectedAddress = null,
@@ -483,24 +546,24 @@ class BleManager(private val context: Context) {
         }
 
         @SuppressLint("MissingPermission")
-        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            if (gatt !== g) return
+        override fun onServicesDiscovered(connection: BluetoothGatt, status: Int) {
+            if (gatt !== connection) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 _state.value = _state.value.copy(error = "Connected, but service discovery failed: $status")
                 return
             }
 
-            _state.value = _state.value.copy(services = g.services.map { it.uuid.toString() }, error = null)
-            val heartRate = g.getService(HEART_RATE_SERVICE)?.getCharacteristic(HEART_RATE_MEASUREMENT) ?: return
-            g.setCharacteristicNotification(heartRate, true)
+            _state.value = _state.value.copy(services = connection.services.map { it.uuid.toString() }, error = null)
+            val heartRate = connection.getService(HEART_RATE_SERVICE)?.getCharacteristic(HEART_RATE_MEASUREMENT) ?: return
+            connection.setCharacteristicNotification(heartRate, true)
             heartRate.getDescriptor(CCCD)?.let { descriptor ->
                 if (Build.VERSION.SDK_INT >= 33) {
-                    g.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    connection.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
                 } else {
                     @Suppress("DEPRECATION")
                     descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                     @Suppress("DEPRECATION")
-                    g.writeDescriptor(descriptor)
+                    connection.writeDescriptor(descriptor)
                 }
             }
         }
