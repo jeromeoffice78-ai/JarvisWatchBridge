@@ -10,8 +10,10 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
+from signing import router as signing_router
 
 router = APIRouter(prefix="/auth", tags=["chairman-auth"])
+router.include_router(signing_router)
 TOKEN_PREFIX = "jv1"
 DEFAULT_TTL_DAYS = 180
 ENROLL_WINDOW_SECONDS = 15 * 60
