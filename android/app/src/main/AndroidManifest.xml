@@ -19,7 +19,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="JARVIS Watch Bridge"
+        android:label="JARVIS Chairman Render"
         android:theme="@style/Theme.JarvisWatchBridge">
         <activity
             android:name=".MainActivity"
