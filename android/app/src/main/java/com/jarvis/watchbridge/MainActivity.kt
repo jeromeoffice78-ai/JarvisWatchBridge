@@ -2,6 +2,7 @@ package com.jarvis.watchbridge
 
 import android.Manifest
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.speech.RecognizerIntent
@@ -67,6 +68,16 @@ class MainActivity : ComponentActivity() {
     private val phoneMessages = PhoneMessageRepository()
     private lateinit var deviceRoles: DeviceRoleManager
     private lateinit var moodEngine: MoodEngine
+
+    private fun requiredBlePermissions(): Array<String> =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -167,12 +178,42 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestMultiplePermissions()
                 ) { grants ->
                     val denied = grants.filterValues { !it }.keys
-                    roleMessage = if (denied.isEmpty()) "Required permissions granted" else "Some capabilities remain permission-limited"
+                    roleMessage = if (denied.isEmpty()) {
+                        "Required permissions granted"
+                    } else {
+                        "Some capabilities remain permission-limited"
+                    }
+                    val bleGranted = requiredBlePermissions().all { permission ->
+                        grants[permission] == true || ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            permission
+                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    }
+                    if (bleGranted && deviceRole == "primary") {
+                        ble.connectTargetWatch()
+                    }
                 }
 
                 val healthLauncher = rememberLauncherForActivityResult(
                     PermissionController.createRequestPermissionResultContract()
                 ) { }
+
+                LaunchedEffect(deviceRole) {
+                    if (deviceRole == "primary") {
+                        val required = requiredBlePermissions()
+                        val granted = required.all { permission ->
+                            ContextCompat.checkSelfPermission(
+                                this@MainActivity,
+                                permission
+                            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                        }
+                        if (granted) {
+                            ble.connectTargetWatch()
+                        } else {
+                            permissionLauncher.launch(required)
+                        }
+                    }
+                }
 
                 val speechLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.StartActivityForResult()
@@ -254,8 +295,14 @@ class MainActivity : ComponentActivity() {
                         }
 
                         item {
+                            val watchStatus = when {
+                                state.connectedName != null -> state.connectedName!!
+                                state.connectingAddress != null -> "Connecting…"
+                                state.scanning -> "Scanning…"
+                                else -> "Not connected"
+                            }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                StatusTile("WATCH", state.connectedName ?: "Not connected", Modifier.weight(1f))
+                                StatusTile("WATCH", watchStatus, Modifier.weight(1f))
                                 StatusTile("ROLE", deviceRole.uppercase(Locale.US), Modifier.weight(1f))
                             }
                         }
