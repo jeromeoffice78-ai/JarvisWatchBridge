@@ -9,12 +9,12 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        // New package ID avoids debug-signature conflicts with prior repair APKs.
-        applicationId = "com.jarvis.chairman.render255"
+        // Separate Chairman Access package installs alongside every earlier JARVIS build.
+        applicationId = "chairman.access.android.smartwatch.bridge"
         minSdk = 28
         targetSdk = 36
-        versionCode = 255
-        versionName = "2.5.5"
+        versionCode = 300
+        versionName = "3.0.0"
 
         // Render-only FastAPI backend. No CloudFront/Floot fallback exists in this build.
         buildConfigField(
