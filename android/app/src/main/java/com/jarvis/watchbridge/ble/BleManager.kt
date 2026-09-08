@@ -22,6 +22,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.ArrayDeque
+import java.util.LinkedHashMap
 import java.util.UUID
 
 class BleManager(private val context: Context) {
@@ -43,13 +44,14 @@ class BleManager(private val context: Context) {
     )
 
     private data class Candidate(
-        val address: String,
+        val device: BluetoothDevice,
         val autoConnect: Boolean,
         val label: String
     )
 
     private val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
     private val adapter get() = bluetoothManager?.adapter
+    private val prefs = context.getSharedPreferences("jarvis_ble_identity", Context.MODE_PRIVATE)
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state
 
@@ -60,21 +62,31 @@ class BleManager(private val context: Context) {
     private var modernScanResults = 0
     private var legacyScanResults = 0
     private var legacyScanning = false
+    private var lastLiveTarget: BluetoothDevice? = null
+    private val seenDevices = LinkedHashMap<String, BluetoothDevice>()
     private val attemptQueue = ArrayDeque<Candidate>()
 
     companion object {
-        // Confirmed directly from the watch About screen.
+        // Historical addresses from the watch. The live ScanResult BluetoothDevice is always preferred,
+        // because a BLE address can be private/rotating and Android also retains address-type metadata
+        // on the BluetoothDevice obtained from scanning.
         const val TARGET_WATCH_LE_ADDRESS = "41:42:69:41:49:D5"
         const val TARGET_WATCH_BT_ADDRESS = "41:42:69:41:49:80"
-        private val TARGET_WATCH_NAMES = listOf("JARVIS WATCH", "WATCH", "V19", "LAXASFIT")
+        private val TARGET_WATCH_NAMES = listOf(
+            "JARVIS WATCH",
+            "LAXASFIT",
+            "LAXAS FIT",
+            "V19",
+            "SMART WATCH",
+            "SMARTWATCH",
+            "WATCH"
+        )
 
-        private const val MODERN_SCAN_MS = 6_000L
-        private const val LEGACY_SCAN_MS = 6_000L
-        private const val DIRECT_CONNECT_TIMEOUT_MS = 15_000L
-        private const val AUTO_CONNECT_TIMEOUT_MS = 45_000L
-        private const val RECONNECT_DELAY_MS = 4_000L
-        private const val CONNECTION_PROBE_MS = 1_500L
-        private const val CONNECTION_PROBE_COUNT = 24
+        private const val MODERN_SCAN_MS = 10_000L
+        private const val LEGACY_SCAN_MS = 8_000L
+        private const val DIRECT_CONNECT_TIMEOUT_MS = 18_000L
+        private const val AUTO_CONNECT_TIMEOUT_MS = 35_000L
+        private const val RECONNECT_DELAY_MS = 5_000L
 
         val HEART_RATE_SERVICE: UUID = UUID.fromString("0000180d-0000-1000-8000-00805f9b34fb")
         val HEART_RATE_MEASUREMENT: UUID = UUID.fromString("00002a37-0000-1000-8000-00805f9b34fb")
@@ -101,7 +113,7 @@ class BleManager(private val context: Context) {
 
     private fun bluetoothReady(): Boolean {
         val bluetoothAdapter = adapter ?: run {
-            _state.value = _state.value.copy(error = "Bluetooth is unavailable on this tablet")
+            _state.value = _state.value.copy(error = "Bluetooth is unavailable on this device")
             return false
         }
         if (!bluetoothAdapter.isEnabled) {
@@ -111,11 +123,32 @@ class BleManager(private val context: Context) {
         return true
     }
 
-    private fun isJarvisTarget(name: String?, address: String): Boolean {
+    private fun rememberedAddress(): String? = prefs.getString("target_address", null)
+
+    private fun isJarvisTarget(
+        name: String?,
+        address: String,
+        advertisedServices: Collection<UUID> = emptyList()
+    ): Boolean {
         if (address.equals(TARGET_WATCH_LE_ADDRESS, ignoreCase = true)) return true
         if (address.equals(TARGET_WATCH_BT_ADDRESS, ignoreCase = true)) return true
-        val normalized = name.orEmpty().uppercase()
-        return TARGET_WATCH_NAMES.any { normalized == it || normalized.contains(it) }
+        if (rememberedAddress()?.equals(address, ignoreCase = true) == true) return true
+        if (HEART_RATE_SERVICE in advertisedServices) return true
+
+        val normalized = name.orEmpty().trim().uppercase()
+        return normalized.isNotBlank() && TARGET_WATCH_NAMES.any { token -> normalized.contains(token) }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun rememberTarget(device: BluetoothDevice, name: String?) {
+        val resolvedName = name?.takeIf { it.isNotBlank() }
+            ?: runCatching { device.name }.getOrNull()
+            ?: "JARVIS Watch"
+        prefs.edit()
+            .putString("target_address", device.address)
+            .putString("target_name", resolvedName)
+            .apply()
+        lastLiveTarget = device
     }
 
     @SuppressLint("MissingPermission")
@@ -123,30 +156,22 @@ class BleManager(private val context: Context) {
         if (!hasConnectPermission()) return emptyList()
         return runCatching {
             adapter?.bondedDevices.orEmpty().filter { device ->
-                isJarvisTarget(device.name, device.address)
+                val name = runCatching { device.name }.getOrNull()
+                isJarvisTarget(name, device.address)
             }
         }.getOrDefault(emptyList())
     }
 
     @SuppressLint("MissingPermission")
-    private fun isSystemGattConnected(address: String): Boolean {
-        if (!hasConnectPermission()) return false
-        return runCatching {
-            bluetoothManager
-                ?.getConnectedDevices(BluetoothProfile.GATT)
-                ?.any { device -> device.address.equals(address, ignoreCase = true) }
-                ?: false
-        }.getOrDefault(false)
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun watchAlreadyHeldByAnotherGattClient(): BluetoothDevice? {
+    private fun systemConnectedWatch(): BluetoothDevice? {
         if (!hasConnectPermission()) return null
-        if (_state.value.connectedAddress != null || gatt != null) return null
         return runCatching {
             bluetoothManager
                 ?.getConnectedDevices(BluetoothProfile.GATT)
-                ?.firstOrNull { device -> isJarvisTarget(device.name, device.address) }
+                ?.firstOrNull { device ->
+                    val name = runCatching { device.name }.getOrNull()
+                    isJarvisTarget(name, device.address)
+                }
         }.getOrNull()
     }
 
@@ -157,16 +182,28 @@ class BleManager(private val context: Context) {
         _state.value = _state.value.copy(devices = updated)
     }
 
-    private fun handleDiscoveredDevice(device: BluetoothDevice, advertisedName: String?) {
+    @SuppressLint("MissingPermission")
+    private fun handleDiscoveredDevice(
+        device: BluetoothDevice,
+        advertisedName: String?,
+        advertisedServices: Collection<UUID> = emptyList()
+    ) {
         if (!hasConnectPermission()) return
-        @SuppressLint("MissingPermission")
-        val name = runCatching { device.name }.getOrNull() ?: advertisedName ?: "BLE device"
+
         val address = device.address
-        val target = isJarvisTarget(name, address)
+        val name = runCatching { device.name }.getOrNull()
+            ?: advertisedName
+            ?: "BLE device"
+        val target = isJarvisTarget(name, address, advertisedServices)
+
+        seenDevices[address.uppercase()] = device
         mergeDevice(Device(name, address, target))
 
-        if (target && _state.value.connectedAddress == null && _state.value.connectingAddress == null) {
-            beginConnectionPlan(address, "scan result")
+        if (target) {
+            rememberTarget(device, name)
+            if (_state.value.connectedAddress == null && _state.value.connectingAddress == null) {
+                beginConnectionPlan(device, "live BLE scan")
+            }
         }
     }
 
@@ -174,20 +211,22 @@ class BleManager(private val context: Context) {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             modernScanResults += 1
-            handleDiscoveredDevice(result.device, result.scanRecord?.deviceName)
+            val services = result.scanRecord?.serviceUuids?.map { it.uuid }.orEmpty()
+            handleDiscoveredDevice(result.device, result.scanRecord?.deviceName, services)
         }
 
         @SuppressLint("MissingPermission")
         override fun onBatchScanResults(results: MutableList<ScanResult>) {
             results.forEach { result ->
                 modernScanResults += 1
-                handleDiscoveredDevice(result.device, result.scanRecord?.deviceName)
+                val services = result.scanRecord?.serviceUuids?.map { it.uuid }.orEmpty()
+                handleDiscoveredDevice(result.device, result.scanRecord?.deviceName, services)
             }
         }
 
         override fun onScanFailed(errorCode: Int) {
             if (!_state.value.scanning) return
-            _state.value = _state.value.copy(error = "Modern BLE scan failed ($errorCode); trying legacy scan")
+            _state.value = _state.value.copy(error = "Modern BLE scan failed ($errorCode); trying compatibility scan")
             startLegacyScan(scanGeneration)
         }
     }
@@ -224,26 +263,33 @@ class BleManager(private val context: Context) {
         modernScanResults = 0
         legacyScanResults = 0
         stopActiveScans()
+        if (resetDevices) seenDevices.clear()
 
         val bonded = bondedWatchDevices().map { device ->
-            Device(device.name ?: "Paired watch", device.address, true)
+            Device(runCatching { device.name }.getOrNull() ?: "Paired watch", device.address, true)
         }
 
         _state.value = _state.value.copy(
             scanning = true,
             connectingAddress = null,
             devices = if (resetDevices) bonded else (_state.value.devices + bonded).distinctBy { it.address.uppercase() },
-            error = "Scanning for watch on tablet…"
+            error = "Scanning for the watch's live BLE identity…"
         )
 
-        scanner.startScan(
-            null,
-            ScanSettings.Builder()
-                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-                .setReportDelay(0)
-                .build(),
-            scanCallback
-        )
+        runCatching {
+            scanner.startScan(
+                null,
+                ScanSettings.Builder()
+                    .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                    .setReportDelay(0)
+                    .build(),
+                scanCallback
+            )
+        }.onFailure {
+            _state.value = _state.value.copy(error = "BLE scan could not start: ${it.message ?: "unknown error"}")
+            startLegacyScan(generation)
+            return
+        }
 
         handler.postDelayed({
             if (generation != scanGeneration || _state.value.connectedAddress != null || _state.value.connectingAddress != null) {
@@ -262,7 +308,7 @@ class BleManager(private val context: Context) {
         legacyScanning = runCatching { adapter?.startLeScan(legacyScanCallback) == true }.getOrDefault(false)
         _state.value = _state.value.copy(
             scanning = true,
-            error = "No watch yet. Modern scan saw $modernScanResults result(s); trying legacy BLE scan…"
+            error = "Still looking. Modern scan saw $modernScanResults BLE device(s); running compatibility scan…"
         )
 
         handler.postDelayed({
@@ -271,7 +317,7 @@ class BleManager(private val context: Context) {
             }
             stopActiveScans()
             _state.value = _state.value.copy(scanning = false)
-            beginFallbackPlan("Scanner saw ${modernScanResults + legacyScanResults} BLE result(s), but not the watch")
+            beginFallbackPlan("Scan saw ${modernScanResults + legacyScanResults} BLE result(s), but did not identify the watch")
         }, LEGACY_SCAN_MS)
     }
 
@@ -300,47 +346,62 @@ class BleManager(private val context: Context) {
         }
         if (_state.value.connectedAddress != null) return
 
-        val currentGatt = gatt
-        val currentAddress = _state.value.connectingAddress
-        if (currentGatt != null && currentAddress != null && isSystemGattConnected(currentAddress)) {
-            adoptConnectedGatt(currentGatt, "Android GATT verification")
-            return
-        }
-
-        watchAlreadyHeldByAnotherGattClient()?.let { held ->
-            _state.value = _state.value.copy(
-                scanning = false,
-                connectingAddress = null,
-                error = "Watch BLE is already connected through another app (${held.address}). Force-stop Laxasfit, then tap Reconnect watch."
-            )
-            scheduleReconnect()
-            return
-        }
-
         clearPendingConnection()
+
+        systemConnectedWatch()?.let { device ->
+            rememberTarget(device, runCatching { device.name }.getOrNull())
+            beginConnectionPlan(device, "Android already-connected watch")
+            return
+        }
+
+        lastLiveTarget?.let { device ->
+            beginConnectionPlan(device, "last live watch")
+            return
+        }
+
         startModernScan(resetDevices = true)
     }
 
+    @SuppressLint("MissingPermission")
     fun connect(address: String) {
         shouldReconnect = true
         handler.removeCallbacks(reconnectRunnable)
-        beginConnectionPlan(address, "selected device")
+
+        val device = seenDevices[address.uppercase()] ?: runCatching { adapter?.getRemoteDevice(address) }.getOrNull()
+        if (device == null) {
+            _state.value = _state.value.copy(error = "Could not open Bluetooth device $address")
+            return
+        }
+
+        val name = runCatching { device.name }.getOrNull()
+        rememberTarget(device, name)
+        val existing = _state.value.devices.firstOrNull { it.address.equals(address, ignoreCase = true) }
+        if (existing != null && !existing.jarvisTarget) {
+            mergeDevice(existing.copy(jarvisTarget = true))
+        }
+        beginConnectionPlan(device, "selected device")
     }
 
     @SuppressLint("MissingPermission")
-    private fun beginConnectionPlan(firstAddress: String, reason: String) {
+    private fun beginConnectionPlan(firstDevice: BluetoothDevice, reason: String) {
         scanGeneration += 1
         stopActiveScans()
         clearPendingConnection()
         attemptQueue.clear()
 
-        addCandidate(firstAddress, false, reason)
-        addCandidate(TARGET_WATCH_LE_ADDRESS, false, "confirmed LE address")
-        addCandidate(TARGET_WATCH_BT_ADDRESS, false, "watch BT identity address")
+        addCandidate(firstDevice, false, reason)
+        addCandidate(firstDevice, true, "$reason background retry")
+
+        systemConnectedWatch()?.let { addCandidate(it, false, "Android connected-device record") }
+        lastLiveTarget?.let { addCandidate(it, false, "last live scan device") }
         bondedWatchDevices().forEach { device ->
-            addCandidate(device.address, false, "paired Watch on tablet")
+            addCandidate(device, false, "paired watch")
         }
-        addCandidate(TARGET_WATCH_LE_ADDRESS, true, "background LE reconnect")
+
+        // Historical addresses are deliberately last. A live ScanResult BluetoothDevice is safer for
+        // private/random BLE addressing and carries the address-type information Android discovered.
+        remoteDeviceOrNull(rememberedAddress())?.let { addCandidate(it, false, "remembered address fallback") }
+        remoteDeviceOrNull(TARGET_WATCH_LE_ADDRESS)?.let { addCandidate(it, false, "historical LE fallback") }
 
         tryNextCandidate(null)
     }
@@ -348,103 +409,102 @@ class BleManager(private val context: Context) {
     @SuppressLint("MissingPermission")
     private fun beginFallbackPlan(reason: String) {
         attemptQueue.clear()
-        addCandidate(TARGET_WATCH_LE_ADDRESS, false, "confirmed LE address")
-        addCandidate(TARGET_WATCH_BT_ADDRESS, false, "watch BT identity address")
-        bondedWatchDevices().forEach { device ->
-            addCandidate(device.address, false, "paired Watch on tablet")
+
+        systemConnectedWatch()?.let { addCandidate(it, false, "Android connected-device record") }
+        lastLiveTarget?.let { addCandidate(it, false, "last live scan device") }
+        bondedWatchDevices().forEach { device -> addCandidate(device, false, "paired watch") }
+        remoteDeviceOrNull(rememberedAddress())?.let { addCandidate(it, false, "remembered address fallback") }
+        remoteDeviceOrNull(TARGET_WATCH_LE_ADDRESS)?.let { addCandidate(it, false, "historical LE fallback") }
+
+        if (attemptQueue.isEmpty()) {
+            _state.value = _state.value.copy(
+                scanning = false,
+                connectingAddress = null,
+                error = "$reason. Tap Scan watches; if JARVIS cannot identify the name automatically, open System controls and tap your watch from the detected list."
+            )
+            scheduleReconnect()
+            return
         }
-        addCandidate(TARGET_WATCH_LE_ADDRESS, true, "background LE reconnect")
+
         tryNextCandidate(reason)
     }
 
-    private fun addCandidate(address: String, autoConnect: Boolean, label: String) {
+    @SuppressLint("MissingPermission")
+    private fun remoteDeviceOrNull(address: String?): BluetoothDevice? {
+        if (address.isNullOrBlank()) return null
+        return runCatching { adapter?.getRemoteDevice(address) }.getOrNull()
+    }
+
+    private fun addCandidate(device: BluetoothDevice, autoConnect: Boolean, label: String) {
+        val address = device.address
         if (address.isBlank()) return
-        if (attemptQueue.any { it.address.equals(address, ignoreCase = true) && it.autoConnect == autoConnect }) return
-        attemptQueue.addLast(Candidate(address, autoConnect, label))
+        if (attemptQueue.any { candidate ->
+                candidate.device.address.equals(address, ignoreCase = true) && candidate.autoConnect == autoConnect
+            }) return
+        attemptQueue.addLast(Candidate(device, autoConnect, label))
     }
 
     @SuppressLint("MissingPermission")
     private fun tryNextCandidate(lastFailure: String?) {
         if (!shouldReconnect || _state.value.connectedAddress != null) return
+
         val candidate = attemptQueue.pollFirst()
         if (candidate == null) {
             _state.value = _state.value.copy(
                 scanning = false,
                 connectingAddress = null,
                 error = buildString {
-                    append("Watch BLE not connected")
+                    append("Watch is not connected")
                     if (!lastFailure.isNullOrBlank()) append(": $lastFailure")
-                    append(". Retrying scan automatically.")
+                    append(". JARVIS will rescan using the watch's live BLE identity.")
                 }
             )
             scheduleReconnect()
             return
         }
 
-        val device = try {
-            adapter?.getRemoteDevice(candidate.address)
-        } catch (_: IllegalArgumentException) {
-            null
-        }
-        if (device == null) {
-            tryNextCandidate("invalid address ${candidate.address}")
-            return
-        }
-
         clearPendingConnection()
+
+        val device = candidate.device
+        val address = device.address
         _state.value = _state.value.copy(
             scanning = false,
-            connectingAddress = candidate.address,
-            error = "Connecting ${candidate.label}: ${candidate.address}${if (candidate.autoConnect) " (background)" else ""}"
+            connectingAddress = address,
+            error = "Connecting ${candidate.label}: $address${if (candidate.autoConnect) " (background)" else ""}"
         )
 
-        val newGatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val newGatt = runCatching {
+            // Do not force a PHY here. Some low-cost wearable chipsets fail to complete GATT setup
+            // when Android's PHY-specific overload is used. TRANSPORT_LE is sufficient and lets the
+            // platform use the address type learned from the live ScanResult BluetoothDevice.
             device.connectGatt(
                 context,
                 candidate.autoConnect,
                 gattCallback,
-                BluetoothDevice.TRANSPORT_LE,
-                BluetoothDevice.PHY_LE_1M_MASK
+                BluetoothDevice.TRANSPORT_LE
             )
-        } else {
-            device.connectGatt(context, candidate.autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        }.getOrElse { error ->
+            _state.value = _state.value.copy(connectingAddress = null)
+            handler.post { tryNextCandidate("connectGatt failed for $address: ${error.message ?: "unknown error"}") }
+            return
         }
+
         gatt = newGatt
-        scheduleConnectionProbe(newGatt, candidate.address, 0)
 
         val timeout = if (candidate.autoConnect) AUTO_CONNECT_TIMEOUT_MS else DIRECT_CONNECT_TIMEOUT_MS
         handler.postDelayed({
             if (gatt === newGatt && _state.value.connectedAddress == null) {
-                if (isSystemGattConnected(candidate.address)) {
-                    adoptConnectedGatt(newGatt, "Android GATT timeout verification")
-                    return@postDelayed
-                }
-
                 gatt = null
                 runCatching { newGatt.disconnect() }
                 runCatching { newGatt.close() }
                 _state.value = _state.value.copy(connectingAddress = null)
-                tryNextCandidate("timeout on ${candidate.address}")
+                tryNextCandidate("timeout on $address")
             }
         }, timeout)
     }
 
     @SuppressLint("MissingPermission")
-    private fun scheduleConnectionProbe(connection: BluetoothGatt, address: String, attempt: Int) {
-        if (attempt >= CONNECTION_PROBE_COUNT) return
-        handler.postDelayed({
-            if (_state.value.connectedAddress != null || gatt !== connection) return@postDelayed
-
-            if (isSystemGattConnected(address)) {
-                adoptConnectedGatt(connection, "Android GATT state")
-            } else {
-                scheduleConnectionProbe(connection, address, attempt + 1)
-            }
-        }, CONNECTION_PROBE_MS)
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun adoptConnectedGatt(connection: BluetoothGatt, source: String) {
+    private fun adoptConnectedGatt(connection: BluetoothGatt) {
         gatt = connection
         attemptQueue.clear()
         scanGeneration += 1
@@ -453,6 +513,8 @@ class BleManager(private val context: Context) {
 
         val name = runCatching { connection.device.name }.getOrNull() ?: "JARVIS Watch"
         val address = connection.device.address
+        rememberTarget(connection.device, name)
+
         _state.value = _state.value.copy(
             scanning = false,
             connectedName = name,
@@ -462,7 +524,15 @@ class BleManager(private val context: Context) {
         )
 
         runCatching { connection.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
-        runCatching { connection.discoverServices() }
+        val discoveryStarted = runCatching { connection.discoverServices() }.getOrDefault(false)
+        if (!discoveryStarted) {
+            _state.value = _state.value.copy(error = "Watch connected; Android delayed GATT service discovery. Retrying…")
+            handler.postDelayed({
+                if (gatt === connection && _state.value.connectedAddress != null) {
+                    runCatching { connection.discoverServices() }
+                }
+            }, 1_000L)
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -501,17 +571,17 @@ class BleManager(private val context: Context) {
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(connection: BluetoothGatt, status: Int, newState: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
-                if (gatt !== connection && _state.value.connectedAddress == null) {
-                    val name = runCatching { connection.device.name }.getOrNull()
-                    if (isJarvisTarget(name, connection.device.address)) {
-                        adoptConnectedGatt(connection, "GATT callback")
-                        return
-                    }
-                }
+            val address = connection.device.address
+            val expectedAddress = _state.value.connectingAddress
+            val isExpected = expectedAddress?.equals(address, ignoreCase = true) == true
+            val name = runCatching { connection.device.name }.getOrNull()
+            val isTarget = isJarvisTarget(name, address)
 
-                if (gatt === connection) {
-                    adoptConnectedGatt(connection, "GATT callback")
+            if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
+                // A connectGatt callback can arrive before connectGatt() returns on some Android
+                // Bluetooth stacks. Accept the callback if it is the current address or a known target.
+                if (gatt === connection || isExpected || isTarget) {
+                    adoptConnectedGatt(connection)
                     return
                 }
             }
@@ -533,12 +603,12 @@ class BleManager(private val context: Context) {
                     error = if (status == BluetoothGatt.GATT_SUCCESS) {
                         "Watch disconnected"
                     } else {
-                        "Watch GATT status $status; trying next connection method"
+                        "Watch GATT status $status; trying the next live connection method"
                     }
                 )
 
                 if (attemptQueue.isNotEmpty()) {
-                    handler.postDelayed({ tryNextCandidate("GATT $status") }, 500L)
+                    handler.postDelayed({ tryNextCandidate("GATT $status on $address") }, 700L)
                 } else {
                     scheduleReconnect()
                 }
@@ -549,15 +619,29 @@ class BleManager(private val context: Context) {
         override fun onServicesDiscovered(connection: BluetoothGatt, status: Int) {
             if (gatt !== connection) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                _state.value = _state.value.copy(error = "Connected, but service discovery failed: $status")
+                _state.value = _state.value.copy(error = "Watch connected, but service discovery failed ($status). Retrying…")
+                handler.postDelayed({
+                    if (gatt === connection) runCatching { connection.discoverServices() }
+                }, 1_500L)
                 return
             }
 
-            _state.value = _state.value.copy(services = connection.services.map { it.uuid.toString() }, error = null)
-            val heartRate = connection.getService(HEART_RATE_SERVICE)?.getCharacteristic(HEART_RATE_MEASUREMENT) ?: return
-            connection.setCharacteristicNotification(heartRate, true)
+            _state.value = _state.value.copy(
+                services = connection.services.map { it.uuid.toString() },
+                error = null
+            )
+
+            val heartRate = connection.getService(HEART_RATE_SERVICE)
+                ?.getCharacteristic(HEART_RATE_MEASUREMENT)
+                ?: return
+
+            val notifyEnabled = runCatching {
+                connection.setCharacteristicNotification(heartRate, true)
+            }.getOrDefault(false)
+            if (!notifyEnabled) return
+
             heartRate.getDescriptor(CCCD)?.let { descriptor ->
-                if (Build.VERSION.SDK_INT >= 33) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     connection.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
                 } else {
                     @Suppress("DEPRECATION")

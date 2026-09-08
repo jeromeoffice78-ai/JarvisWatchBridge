@@ -46,7 +46,7 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-36" "build-tools;35.0.0"
 
-      - name: Build JARVIS Render 2.5.4 APK
+      - name: Build JARVIS Render 2.5.5 APK
         working-directory: android
         env:
           JARVIS_SETUP_TOKEN: ${{ secrets.JARVIS_SETUP_TOKEN }}
@@ -57,40 +57,40 @@ jobs:
           APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -1)"
           test -f "$APK"
           mkdir -p ../dist
-          cp "$APK" ../dist/JARVIS-RENDER-2.5.4.apk
+          cp "$APK" ../dist/JARVIS-RENDER-2.5.5.apk
 
           APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)"
           AAPT="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt | sort -V | tail -1)"
-          "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-RENDER-2.5.4.apk
-          "$AAPT" dump badging ../dist/JARVIS-RENDER-2.5.4.apk > /tmp/badging.txt
-          "$AAPT" dump permissions ../dist/JARVIS-RENDER-2.5.4.apk > /tmp/permissions.txt
+          "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-RENDER-2.5.5.apk
+          "$AAPT" dump badging ../dist/JARVIS-RENDER-2.5.5.apk > /tmp/badging.txt
+          "$AAPT" dump permissions ../dist/JARVIS-RENDER-2.5.5.apk > /tmp/permissions.txt
           cat /tmp/badging.txt
           cat /tmp/permissions.txt
-          grep -Fq "package: name='com.jarvis.chairman.render254'" /tmp/badging.txt
-          grep -Fq "versionCode='254'" /tmp/badging.txt
-          grep -Fq "versionName='2.5.4'" /tmp/badging.txt
-          grep -Fq "application-label:'JARVIS Render 2.5.4'" /tmp/badging.txt
+          grep -Fq "package: name='com.jarvis.chairman.render255'" /tmp/badging.txt
+          grep -Fq "versionCode='255'" /tmp/badging.txt
+          grep -Fq "versionName='2.5.5'" /tmp/badging.txt
+          grep -Fq "application-label:'JARVIS Render 2.5.5'" /tmp/badging.txt
           for permission in android.permission.INTERNET android.permission.RECORD_AUDIO android.permission.BLUETOOTH_SCAN android.permission.BLUETOOTH_CONNECT android.permission.FOREGROUND_SERVICE_MICROPHONE; do
             grep -Fq "$permission" /tmp/permissions.txt || { echo "Missing required permission: $permission" >&2; exit 1; }
           done
-          sha256sum ../dist/JARVIS-RENDER-2.5.4.apk > ../dist/SHA256SUMS.txt
+          sha256sum ../dist/JARVIS-RENDER-2.5.5.apk > ../dist/SHA256SUMS.txt
 
-      - name: Publish JARVIS Render 2.5.4 release
+      - name: Publish JARVIS Render 2.5.5 release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          TAG="jarvis-render-v2.5.4-run-${GITHUB_RUN_ID}"
+          TAG="jarvis-render-v2.5.5-run-${GITHUB_RUN_ID}"
           gh release create "$TAG" \
-            dist/JARVIS-RENDER-2.5.4.apk \
+            dist/JARVIS-RENDER-2.5.5.apk \
             dist/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
-            --title "JARVIS Render 2.5.4" \
-            --notes "GATT-state repair build. The watch itself showed LE Connected while JARVIS still displayed Connecting. This build verifies the tablet's Android GATT state during connection, adopts the active JARVIS GATT object when Android reports the LE address connected, handles late/synchronous GATT callbacks safely, extends background reconnect timing, preserves confirmed LE 41:42:69:41:49:D5, and keeps working Render/OpenAI voice chat."
+            --title "JARVIS Render 2.5.5" \
+            --notes "Live-BLE identity repair. This build no longer treats Android's global GATT connection state as proof that JARVIS owns a working GATT client. It connects from the BluetoothDevice returned by the live scan, preserves Android's BLE address-type metadata, avoids the PHY-specific connectGatt overload that can fail on inexpensive wearable chipsets, supports an already-connected watch through a fresh app GATT client, remembers a user-selected live device, and relegates the historical 41:42:69:41:49:D5 address to last-resort fallback instead of the primary path."
 
       - uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-RENDER-2.5.4
+          name: JARVIS-RENDER-2.5.5
           path: dist/*
           retention-days: 30
