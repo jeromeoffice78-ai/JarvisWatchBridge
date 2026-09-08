@@ -30,6 +30,7 @@ import com.jarvis.watchbridge.ble.BleManager
 import com.jarvis.watchbridge.health.HealthRepository
 import com.jarvis.watchbridge.notifications.NotificationHelper
 import com.jarvis.watchbridge.notifications.PhoneMessageRepository
+import com.jarvis.watchbridge.ui.BoardMeetingPanel
 import com.jarvis.watchbridge.ui.JarvisPortrait
 import com.jarvis.watchbridge.ui.JarvisVisualState
 import com.jarvis.watchbridge.voice.AlwaysListeningService
@@ -109,6 +110,7 @@ class MainActivity : ComponentActivity() {
                 var selectedRoute by remember { mutableStateOf("Device audio") }
                 var showSystems by remember { mutableStateOf(false) }
                 var showHealth by remember { mutableStateOf(false) }
+                var showBoard by remember { mutableStateOf(false) }
 
                 DisposableEffect(Unit) {
                     speech.setSpeakingListener { speaking -> runOnUiThread { isSpeaking = speaking } }
@@ -211,6 +213,24 @@ class MainActivity : ComponentActivity() {
                                     Spacer(Modifier.height(6.dp))
                                     Text(reply, color = JarvisText, style = MaterialTheme.typography.bodyLarge)
                                 }
+                            }
+                        }
+
+                        item {
+                            Button(
+                                onClick = { showBoard = !showBoard },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF163B58))
+                            ) { Text(if (showBoard) "CLOSE BOARD MEETING" else "OPEN ANIMATED BOARD MEETING") }
+                        }
+
+                        if (showBoard) {
+                            item {
+                                BoardMeetingPanel(onSpeak = { briefing ->
+                                    reply = briefing
+                                    speech.speak(briefing)
+                                })
                             }
                         }
 
