@@ -401,7 +401,8 @@ class BleManager(private val context: Context) {
         // Historical addresses are deliberately last. A live ScanResult BluetoothDevice is safer for
         // private/random BLE addressing and carries the address-type information Android discovered.
         remoteDeviceOrNull(rememberedAddress())?.let { addCandidate(it, false, "remembered address fallback") }
-        remoteDeviceOrNull(TARGET_WATCH_LE_ADDRESS)?.let { addCandidate(it, false, "historical LE fallback") }
+        remoteDeviceOrNull(TARGET_WATCH_LE_ADDRESS)?.let { addCandidate(it, false, "confirmed LE address") }
+        remoteDeviceOrNull(TARGET_WATCH_BT_ADDRESS)?.let { addCandidate(it, false, "confirmed Bluetooth address") }
 
         tryNextCandidate(null)
     }
@@ -414,7 +415,8 @@ class BleManager(private val context: Context) {
         lastLiveTarget?.let { addCandidate(it, false, "last live scan device") }
         bondedWatchDevices().forEach { device -> addCandidate(device, false, "paired watch") }
         remoteDeviceOrNull(rememberedAddress())?.let { addCandidate(it, false, "remembered address fallback") }
-        remoteDeviceOrNull(TARGET_WATCH_LE_ADDRESS)?.let { addCandidate(it, false, "historical LE fallback") }
+        remoteDeviceOrNull(TARGET_WATCH_LE_ADDRESS)?.let { addCandidate(it, false, "confirmed LE address") }
+        remoteDeviceOrNull(TARGET_WATCH_BT_ADDRESS)?.let { addCandidate(it, false, "confirmed Bluetooth address") }
 
         if (attemptQueue.isEmpty()) {
             _state.value = _state.value.copy(
