@@ -1,3 +1,5 @@
+import base64
+import binascii
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -21,6 +23,11 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+
+
+class VisionRequest(BaseModel):
+    image_base64: str = Field(min_length=100, max_length=6_000_000)
+    prompt: str = Field(default="Describe what is visible.", min_length=1, max_length=1000)
 
 
 class PhoneSetupRequest(BaseModel):
@@ -234,6 +241,33 @@ def chat(req: ChatRequest) -> ChatResponse:
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI service error: {type(exc).__name__}") from exc
+    return ChatResponse(reply=response.output_text.strip())
+
+
+@app.post("/vision", response_model=ChatResponse)
+def vision(req: VisionRequest, x_jarvis_admin_token: str | None = Header(default=None)) -> ChatResponse:
+    _require_admin(x_jarvis_admin_token)
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured")
+    try:
+        image = base64.b64decode(req.image_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid camera image") from exc
+    if len(image) > 4_000_000:
+        raise HTTPException(status_code=413, detail="Camera image is too large")
+    try:
+        response = OpenAI(api_key=api_key).responses.create(
+            model=os.getenv("OPENAI_VISION_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini")),
+            instructions="You are JARVIS vision for Chairman Jerome. Describe visible facts respectfully and concisely. Never claim identity from appearance alone.",
+            input=[{"role": "user", "content": [
+                {"type": "input_text", "text": req.prompt},
+                {"type": "input_image", "image_url": "data:image/jpeg;base64," + req.image_base64},
+            ]}],
+            max_output_tokens=220,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Vision service error: {type(exc).__name__}") from exc
     return ChatResponse(reply=response.output_text.strip())
 
 

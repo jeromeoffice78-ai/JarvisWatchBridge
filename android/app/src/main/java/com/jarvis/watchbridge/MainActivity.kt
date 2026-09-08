@@ -25,12 +25,14 @@ import androidx.core.content.ContextCompat
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.lifecycleScope
 import com.jarvis.watchbridge.ai.ChatRepository
+import com.jarvis.watchbridge.ai.VisionRepository
 import com.jarvis.watchbridge.audio.AudioRouter
 import com.jarvis.watchbridge.ble.BleManager
 import com.jarvis.watchbridge.health.HealthRepository
 import com.jarvis.watchbridge.notifications.NotificationHelper
 import com.jarvis.watchbridge.notifications.PhoneMessageRepository
 import com.jarvis.watchbridge.ui.BoardMeetingPanel
+import com.jarvis.watchbridge.ui.ChairmanCameraPanel
 import com.jarvis.watchbridge.ui.JarvisPortrait
 import com.jarvis.watchbridge.ui.JarvisVisualState
 import com.jarvis.watchbridge.voice.AlwaysListeningService
@@ -52,6 +54,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var ble: BleManager
     private lateinit var health: HealthRepository
     private val chat = ChatRepository()
+    private val vision = VisionRepository()
     private lateinit var notifications: NotificationHelper
     private lateinit var audioRouter: AudioRouter
     private lateinit var speech: SpeechOutput
@@ -69,6 +72,7 @@ class MainActivity : ComponentActivity() {
     private fun allOptionalPermissions(): Array<String> {
         val permissions = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.CAMERA,
             Manifest.permission.ACTIVITY_RECOGNITION
         )
         permissions += requiredBlePermissions()
@@ -111,6 +115,9 @@ class MainActivity : ComponentActivity() {
                 var showSystems by remember { mutableStateOf(false) }
                 var showHealth by remember { mutableStateOf(false) }
                 var showBoard by remember { mutableStateOf(false) }
+                var showCamera by remember { mutableStateOf(false) }
+                var visionBusy by remember { mutableStateOf(false) }
+                var cameraGranted by remember { mutableStateOf(ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED) }
 
                 DisposableEffect(Unit) {
                     speech.setSpeakingListener { speaking -> runOnUiThread { isSpeaking = speaking } }
@@ -155,6 +162,8 @@ class MainActivity : ComponentActivity() {
                     }
                     if (bleGranted) ble.connectTargetWatch()
                 }
+
+                val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> cameraGranted = granted }
 
                 val healthLauncher = rememberLauncherForActivityResult(
                     PermissionController.createRequestPermissionResultContract()
@@ -231,6 +240,26 @@ class MainActivity : ComponentActivity() {
                                     reply = briefing
                                     speech.speak(briefing)
                                 })
+                                Spacer(Modifier.height(12.dp))
+                                Button(onClick = { showCamera = !showCamera }, modifier = Modifier.fillMaxWidth()) {
+                                    Text(if (showCamera) "CLOSE CHAIRMAN CAMERA" else "OPEN CHAIRMAN CAMERA")
+                                }
+                                if (showCamera) {
+                                    Spacer(Modifier.height(10.dp))
+                                    ChairmanCameraPanel(
+                                        permissionGranted = cameraGranted,
+                                        analyzing = visionBusy,
+                                        onRequestPermission = { cameraLauncher.launch(Manifest.permission.CAMERA) },
+                                        onFrameCaptured = { bytes ->
+                                            visionBusy = true
+                                            lifecycleScope.launch {
+                                                reply = try { vision.describe(bytes) } catch (e: Exception) { "Camera analysis problem: " + (e.message ?: "unknown error") }
+                                                visionBusy = false
+                                                speech.speak(reply)
+                                            }
+                                        }
+                                    )
+                                }
                             }
                         }
 
