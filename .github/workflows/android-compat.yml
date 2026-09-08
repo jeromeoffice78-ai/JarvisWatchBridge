@@ -69,7 +69,7 @@ jobs:
           grep -Fq "package: name='chairman.access.android.smartwatch.bridge'" /tmp/badging.txt
           grep -Fq "versionCode='300'" /tmp/badging.txt
           grep -Fq "versionName='3.0.0'" /tmp/badging.txt
-          grep -Fq "application-label:'JARVIS Chairman Access 3.0.0'" /tmp/badging.txt
+          grep -Fq "application-label:'JARVIS Chairman Access'" /tmp/badging.txt
           for permission in android.permission.INTERNET android.permission.RECORD_AUDIO android.permission.BLUETOOTH_SCAN android.permission.BLUETOOTH_CONNECT android.permission.FOREGROUND_SERVICE_MICROPHONE; do
             grep -Fq "$permission" /tmp/permissions.txt || { echo "Missing required permission: $permission" >&2; exit 1; }
           done
