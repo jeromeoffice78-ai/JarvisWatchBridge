@@ -50,20 +50,10 @@ fun JarvisPortrait(state: JarvisVisualState, modifier: Modifier = Modifier) {
         label = "jarvis-sway"
     )
     val shape = RoundedCornerShape(28.dp)
-    Box(
-        modifier.fillMaxWidth().height(360.dp).clip(shape)
-            .background(Color(0xFF08111A)).border(2.dp, border, shape),
-        contentAlignment = Alignment.Center
-    ) {
-        AndroidView(
-            factory = { context ->
-                android.widget.ImageView(context).apply {
-                    setImageResource(R.drawable.jarvis_chairman)
-                    scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
-                    contentDescription = "JARVIS 3.5 native portrait"
-                }
-            },
-            modifier = Modifier.fillMaxSize().scale(pulse).graphicsLayer { rotationZ = sway }
-        )
-    }
+    Avatar3DView(
+        character = 0,
+        speaking = state == JarvisVisualState.SPEAKING,
+        modifier = modifier.fillMaxWidth().height(360.dp).clip(shape)
+            .background(Color(0xFF08111A)).border(2.dp, border, shape)
+    )
 }
