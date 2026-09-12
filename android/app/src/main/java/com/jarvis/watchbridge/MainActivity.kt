@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -165,6 +166,33 @@ class MainActivity : ComponentActivity() {
 
                 val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> cameraGranted = granted }
 
+                val speechLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.StartActivityForResult()
+                ) { result ->
+                    listening = false
+                    if (result.resultCode == RESULT_OK) {
+                        val heard = result.data
+                            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                            ?.firstOrNull().orEmpty()
+                        if (heard.isNotBlank()) prompt = heard
+                    } else {
+                        reply = "I didn't hear a command. Tap Listen and try again."
+                    }
+                }
+
+                fun startSpeechRecognition() {
+                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                        putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to JARVIS")
+                    }
+                    if (intent.resolveActivity(packageManager) == null) {
+                        reply = "Speech recognition is unavailable. Use the keyboard to talk to JARVIS."
+                    } else {
+                        listening = true
+                        speechLauncher.launch(intent)
+                    }
+                }
+
                 val healthLauncher = rememberLauncherForActivityResult(
                     PermissionController.createRequestPermissionResultContract()
                 ) { }
@@ -291,6 +319,21 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
+                        if (state.devices.isNotEmpty() && state.connectedAddress == null) {
+                            item { Text("Tap your watch to connect", color = JarvisBlue, fontWeight = FontWeight.Bold) }
+                            items(state.devices) { device ->
+                                ElevatedCard(
+                                    onClick = { ble.connect(device.address) },
+                                    colors = CardDefaults.elevatedCardColors(containerColor = JarvisPanel)
+                                ) {
+                                    Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                                        Text(device.name, fontWeight = FontWeight.SemiBold)
+                                        Text(device.address, color = JarvisMuted, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            }
+                        }
+
                         item {
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
@@ -308,7 +351,7 @@ class MainActivity : ComponentActivity() {
                                     )
                                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                         Button(
-                                            onClick = { listening = !listening },
+                                            onClick = { startSpeechRecognition() },
                                             modifier = Modifier.weight(1f),
                                             shape = RoundedCornerShape(16.dp)
                                         ) { Text(if (listening) "Stop" else "Listen") }

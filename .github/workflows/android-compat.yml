@@ -46,7 +46,7 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-36" "build-tools;35.0.0"
 
-      - name: Build JARVIS Chairman Access 3.3.0 human-board APK
+      - name: Build JARVIS Chairman Access 3.4.0 fixed APK
         working-directory: android
         env:
           JARVIS_SETUP_TOKEN: ${{ secrets.JARVIS_SETUP_TOKEN }}
@@ -57,40 +57,40 @@ jobs:
           APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -1)"
           test -f "$APK"
           mkdir -p ../dist
-          cp "$APK" ../dist/JARVIS-CHAIRMAN-ACCESS-v3.3.0-HUMAN-BOARD.apk
+          cp "$APK" ../dist/JARVIS-CHAIRMAN-ACCESS-v3.4.0-FIXED.apk
 
           APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)"
           AAPT="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt | sort -V | tail -1)"
-          "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-CHAIRMAN-ACCESS-v3.3.0-HUMAN-BOARD.apk
-          "$AAPT" dump badging ../dist/JARVIS-CHAIRMAN-ACCESS-v3.3.0-HUMAN-BOARD.apk > /tmp/badging.txt
-          "$AAPT" dump permissions ../dist/JARVIS-CHAIRMAN-ACCESS-v3.3.0-HUMAN-BOARD.apk > /tmp/permissions.txt
+          "$APKSIGNER" verify --verbose --print-certs ../dist/JARVIS-CHAIRMAN-ACCESS-v3.4.0-FIXED.apk
+          "$AAPT" dump badging ../dist/JARVIS-CHAIRMAN-ACCESS-v3.4.0-FIXED.apk > /tmp/badging.txt
+          "$AAPT" dump permissions ../dist/JARVIS-CHAIRMAN-ACCESS-v3.4.0-FIXED.apk > /tmp/permissions.txt
           cat /tmp/badging.txt
           cat /tmp/permissions.txt
           grep -Fq "package: name='chairman.access.android.smartwatch.bridge'" /tmp/badging.txt
-          grep -Fq "versionCode='330'" /tmp/badging.txt
-          grep -Fq "versionName='3.3.0'" /tmp/badging.txt
+          grep -Fq "versionCode='340'" /tmp/badging.txt
+          grep -Fq "versionName='3.4.0'" /tmp/badging.txt
           grep -Fq "application-label:'JARVIS Chairman Access'" /tmp/badging.txt
           for permission in android.permission.INTERNET android.permission.RECORD_AUDIO android.permission.BLUETOOTH_SCAN android.permission.BLUETOOTH_CONNECT android.permission.FOREGROUND_SERVICE_MICROPHONE android.permission.CAMERA; do
             grep -Fq "$permission" /tmp/permissions.txt || { echo "Missing required permission: $permission" >&2; exit 1; }
           done
-          sha256sum ../dist/JARVIS-CHAIRMAN-ACCESS-v3.3.0-HUMAN-BOARD.apk > ../dist/SHA256SUMS.txt
+          sha256sum ../dist/JARVIS-CHAIRMAN-ACCESS-v3.4.0-FIXED.apk > ../dist/SHA256SUMS.txt
 
-      - name: Publish JARVIS Chairman Access 3.3.0 human-board release
+      - name: Publish JARVIS Chairman Access 3.4.0 fixed release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          TAG="jarvis-chairman-access-v3.3.0-human-board-run-${GITHUB_RUN_ID}"
+          TAG="jarvis-chairman-access-v3.4.0-fixed-run-${GITHUB_RUN_ID}"
           gh release create "$TAG" \
-            dist/JARVIS-CHAIRMAN-ACCESS-v3.3.0-HUMAN-BOARD.apk \
+            dist/JARVIS-CHAIRMAN-ACCESS-v3.4.0-FIXED.apk \
             dist/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
-            --title "JARVIS Chairman Access 3.3.0 — Human Board" \
-            --notes "Separate Chairman Access Android smartwatch companion. Includes JARVIS chat, voice, always-listening service, BLE scanning and connection, standard heart-rate GATT support, Health Connect, watch-mirrored notifications, audio routing, and live connection diagnostics."
+            --title "JARVIS Chairman Access 3.4.0 — Display, Voice & Watch Fix" \
+            --notes "Fixes the blank JARVIS display, activates Android speech recognition, and exposes watch scan results beside the connection controls."
 
       - uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-CHAIRMAN-ACCESS-v3.3.0-HUMAN-BOARD
+          name: JARVIS-CHAIRMAN-ACCESS-v3.4.0-FIXED
           path: dist/*
           retention-days: 30
