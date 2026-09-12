@@ -55,5 +55,5 @@ dependencies {
     implementation("com.google.guava:guava:33.4.0-android")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
-    implementation("io.github.sceneview:sceneview:4.35.0")
+    implementation("io.github.sceneview:sceneview:3.6.2")
 }
