@@ -32,7 +32,7 @@ private val boardMembers=listOf(
 @Composable fun BoardMeetingPanel(onSpeak:(String)->Unit,modifier:Modifier=Modifier){
  var active by remember{mutableIntStateOf(0)};var speaking by remember{mutableStateOf(false)};val scope=rememberCoroutineScope();val current=boardMembers[active]
  Card(modifier.fillMaxWidth(),shape=RoundedCornerShape(24.dp),colors=CardDefaults.cardColors(containerColor=Color(0xFF101826))){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
-  Text("EXECUTIVE BOARD MEETING • OFFLINE 3D",color=Color(0xFF59C9FF),style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.Bold)
+  Text("EXECUTIVE BOARD MEETING • NATIVE 3D",color=Color(0xFF59C9FF),style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.Bold)
   Text("Chairman Jerome Office • 6 AI directors • ARIA",color=Color(0xFFA8BDD0))
   TalkingPortrait(current,speaking,Modifier.fillMaxWidth().height(310.dp))
   Text("${current.name} • ${current.role}",color=Color.White,fontWeight=FontWeight.Bold)

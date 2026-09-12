@@ -219,7 +219,7 @@ class MainActivity : ComponentActivity() {
                     ) {
                         item {
                             Text("JARVIS", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = JarvisText)
-                            Text("CHAIRMAN COMMAND CENTER • OFFLINE 3D 3.7", color = JarvisBlue, style = MaterialTheme.typography.labelLarge)
+                            Text("CHAIRMAN COMMAND CENTER • NATIVE 3D 3.8", color = JarvisBlue, style = MaterialTheme.typography.labelLarge)
                         }
 
                         item {
