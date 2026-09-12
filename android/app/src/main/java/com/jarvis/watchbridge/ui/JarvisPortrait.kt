@@ -5,7 +5,6 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -20,9 +19,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.jarvis.watchbridge.R
 
 @Composable
@@ -50,10 +48,14 @@ fun JarvisPortrait(state: JarvisVisualState, modifier: Modifier = Modifier) {
             .background(Color(0xFF08111A)).border(2.dp, border, shape),
         contentAlignment = Alignment.Center
     ) {
-        Image(
-            painter = painterResource(R.drawable.jarvis_chairman),
-            contentDescription = "Animated JARVIS",
-            contentScale = ContentScale.Crop,
+        AndroidView(
+            factory = { context ->
+                android.widget.ImageView(context).apply {
+                    setImageResource(R.drawable.jarvis_chairman)
+                    scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                    contentDescription = "JARVIS 3.5 native portrait"
+                }
+            },
             modifier = Modifier.fillMaxSize().scale(pulse)
         )
     }

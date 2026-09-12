@@ -10,11 +10,11 @@ android {
 
     defaultConfig {
         // Separate Chairman Access package installs alongside every earlier JARVIS build.
-        applicationId = "chairman.access.android.smartwatch.bridge"
+        applicationId = "chairman.access.android.smartwatch.bridge.fixed"
         minSdk = 28
         targetSdk = 36
-        versionCode = 340
-        versionName = "3.4.0"
+        versionCode = 350
+        versionName = "3.5.0"
 
         // Render-only FastAPI backend. No CloudFront/Floot fallback exists in this build.
         buildConfigField(
