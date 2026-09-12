@@ -13,8 +13,8 @@ android {
         applicationId = "chairman.access.android.smartwatch.bridge"
         minSdk = 28
         targetSdk = 36
-        versionCode = 320
-        versionName = "3.2.0"
+        versionCode = 330
+        versionName = "3.3.0"
 
         // Render-only FastAPI backend. No CloudFront/Floot fallback exists in this build.
         buildConfigField(
