@@ -63,4 +63,17 @@ class ChatRepository {
                 ?: error("JARVIS backend returned no reply.")
         }
     }
+
+    suspend fun runBoard(objective: String = "Review current priorities and recommend the next best actions."): String = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("objective", objective).toString().toRequestBody(json)
+        val builder = Request.Builder().url(BuildConfig.API_BASE_URL.trimEnd('/') + "/board/run")
+            .addHeader("Accept", "application/json").addHeader("User-Agent", "JARVIS-Chairman/${BuildConfig.VERSION_NAME}").post(body)
+        val token = BuildConfig.JARVIS_SETUP_TOKEN.trim()
+        if (token.isNotBlank()) builder.addHeader("x-jarvis-admin-token", token)
+        client.newCall(builder.build()).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) error("Autonomous board API error ${response.code}.")
+            JSONObject(text).optString("briefing").takeIf { it.isNotBlank() } ?: error("The autonomous board returned no briefing.")
+        }
+    }
 }

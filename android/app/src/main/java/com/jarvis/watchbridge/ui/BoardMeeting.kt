@@ -29,15 +29,15 @@ private val boardMembers=listOf(
  BoardMember("Victor","Chief Risk Officer","Chairman, risk controls are online. I will flag security, privacy, health, legal, and financial exposure.",Color(0xFFFF7657),R.drawable.director_5,6),
  BoardMember("ARIA","Executive Assistant • Five-Brain AI","Chairman, ARIA is online. Operations, research, technology, finance, and risk intelligence are coordinated and ready for your instructions.",Color(0xFF7BE7FF),R.drawable.director_4,7))
 
-@Composable fun BoardMeetingPanel(onSpeak:(String)->Unit,modifier:Modifier=Modifier){
- var active by remember{mutableIntStateOf(0)};var speaking by remember{mutableStateOf(false)};val scope=rememberCoroutineScope();val current=boardMembers[active]
+@Composable fun BoardMeetingPanel(onSpeak:(String)->Unit,onAutonomous:suspend()->String,modifier:Modifier=Modifier){
+ var active by remember{mutableIntStateOf(0)};var speaking by remember{mutableStateOf(false)};var thinking by remember{mutableStateOf(false)};val scope=rememberCoroutineScope();val current=boardMembers[active]
  Card(modifier.fillMaxWidth(),shape=RoundedCornerShape(24.dp),colors=CardDefaults.cardColors(containerColor=Color(0xFF101826))){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
   Text("EXECUTIVE BOARD MEETING • NATIVE 3D",color=Color(0xFF59C9FF),style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.Bold)
   Text("Chairman Jerome Office • 6 AI directors • ARIA",color=Color(0xFFA8BDD0))
   TalkingPortrait(current,speaking,Modifier.fillMaxWidth().height(310.dp))
   Text("${current.name} • ${current.role}",color=Color.White,fontWeight=FontWeight.Bold)
   boardMembers.chunked(2).forEach{row->Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(10.dp)){row.forEach{m->val i=boardMembers.indexOf(m);DirectorCard(m,active==i,Modifier.weight(1f)){active=i;speaking=true;onSpeak(m.briefing);scope.launch{delay(7000);speaking=false}}}}}
-  Button(onClick={scope.launch{for((i,m)in boardMembers.withIndex()){active=i;speaking=true;onSpeak(m.briefing);delay((m.briefing.length*48L).coerceIn(5000L,12000L))};speaking=false}},modifier=Modifier.fillMaxWidth()){Text("START SPOKEN BOARD MEETING",color=Color(0xFF07101B),fontWeight=FontWeight.Bold)}
+  Button(enabled=!thinking,onClick={scope.launch{thinking=true;active=0;val result=runCatching{onAutonomous()}.getOrElse{"Autonomous board connection failed: ${it.message ?: "unknown error"}"};thinking=false;speaking=true;onSpeak(result);delay((result.length*35L).coerceIn(7000L,30000L));speaking=false}},modifier=Modifier.fillMaxWidth()){Text(if(thinking)"BOARD AGENTS COLLABORATING…" else "RUN AUTONOMOUS BOARD",color=Color(0xFF07101B),fontWeight=FontWeight.Bold)}
  }}}
 
 @Composable private fun TalkingPortrait(m:BoardMember,speaking:Boolean,modifier:Modifier=Modifier){

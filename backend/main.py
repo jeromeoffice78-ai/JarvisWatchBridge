@@ -9,11 +9,12 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from openai import OpenAI
 
-app = FastAPI(title="JARVIS Watch Bridge API", version="0.5.2")
+app = FastAPI(title="JARVIS Watch Bridge API", version="0.6.0")
 VAPI_BASE = "https://api.vapi.ai"
 JARVIS_PHONE_NUMBER = "+15318679252"
 JARVIS_ASSISTANT_NAMES = ("JARVIS Phone Receptionist v2", "JARVIS Phone Receptionist")
 RECENT_CALL_EVENTS: list[dict[str, Any]] = []
+BOARD_MEMORY: list[str] = []
 
 
 class ChatRequest(BaseModel):
@@ -23,6 +24,16 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+
+
+class BoardRequest(BaseModel):
+    objective: str = Field(default="Review current priorities and recommend the next best actions.", min_length=3, max_length=2000)
+
+
+class BoardResponse(BaseModel):
+    briefing: str
+    approval_required: bool
+    status: str
 
 
 class VisionRequest(BaseModel):
@@ -212,7 +223,7 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "jarvis-watch-bridge",
-        "version": "0.5.2",
+        "version": "0.6.0",
         "openai_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
         "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
     }
@@ -242,6 +253,40 @@ def chat(req: ChatRequest) -> ChatResponse:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI service error: {type(exc).__name__}") from exc
     return ChatResponse(reply=response.output_text.strip())
+
+
+@app.post("/board/run", response_model=BoardResponse)
+def run_autonomous_board(req: BoardRequest) -> BoardResponse:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured")
+    sensitive_terms = ("pay", "purchase", "send", "email", "sign", "file", "delete", "publish", "deploy", "account", "password", "legal", "contract", "bank", "transfer")
+    approval_required = any(term in req.objective.lower() for term in sensitive_terms)
+    memory = "\n".join(BOARD_MEMORY[-6:]) or "No prior board decisions."
+    instructions = (
+        "You are the JARVIS autonomous executive board serving Chairman Jerome Office. "
+        "Internally consult these independent agents: JARVIS/orchestrator; Athena/strategy; "
+        "Marcus/legal; Elena/finance; Nova/technology; Maya/growth; Victor/risk; and ARIA, "
+        "the executive assistant combining operations, research, technology, finance, and risk. "
+        "Each agent must assess the objective from its role, challenge weak assumptions, and converge. "
+        "Return one natural spoken briefing under 450 words with each agent's named recommendation, "
+        "the consensus plan, risks, and next steps. Never claim an external action was performed. "
+        "Payments, purchases, legal commitments, account/security changes, messages, publishing, "
+        "deployments, and deletion require explicit Chairman approval before execution."
+    )
+    try:
+        response = OpenAI(api_key=api_key).responses.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"), instructions=instructions,
+            input=f"Board memory:\n{memory}\n\nChairman objective:\n{req.objective}", max_output_tokens=800,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI board error: {type(exc).__name__}") from exc
+    briefing = response.output_text.strip()
+    BOARD_MEMORY.append(f"{datetime.now(timezone.utc).isoformat()} | {req.objective} | {briefing[:500]}")
+    del BOARD_MEMORY[:-20]
+    if approval_required:
+        briefing += "\n\nCHAIRMAN APPROVAL REQUIRED before any consequential action."
+    return BoardResponse(briefing=briefing, approval_required=approval_required, status="awaiting_chairman_approval" if approval_required else "recommendations_ready")
 
 
 @app.post("/vision", response_model=ChatResponse)

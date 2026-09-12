@@ -219,7 +219,7 @@ class MainActivity : ComponentActivity() {
                     ) {
                         item {
                             Text("JARVIS", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = JarvisText)
-                            Text("CHAIRMAN COMMAND CENTER • NATIVE 3D 3.8", color = JarvisBlue, style = MaterialTheme.typography.labelLarge)
+                            Text("CHAIRMAN COMMAND CENTER • AUTONOMOUS 3D 3.9", color = JarvisBlue, style = MaterialTheme.typography.labelLarge)
                         }
 
                         item {
@@ -267,7 +267,7 @@ class MainActivity : ComponentActivity() {
                                 BoardMeetingPanel(onSpeak = { briefing ->
                                     reply = briefing
                                     speech.speak(briefing)
-                                })
+                                }, onAutonomous = { chat.runBoard() })
                                 Spacer(Modifier.height(12.dp))
                                 Button(onClick = { showCamera = !showCamera }, modifier = Modifier.fillMaxWidth()) {
                                     Text(if (showCamera) "CLOSE CHAIRMAN CAMERA" else "OPEN CHAIRMAN CAMERA")
