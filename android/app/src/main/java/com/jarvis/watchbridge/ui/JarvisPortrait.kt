@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -42,6 +43,12 @@ fun JarvisPortrait(state: JarvisVisualState, modifier: Modifier = Modifier) {
         JarvisVisualState.SPEAKING -> Color(0xFF59C9FF)
         JarvisVisualState.IDLE -> Color(0xFF173A57)
     }
+    val sway by transition.animateFloat(
+        initialValue = -1.2f,
+        targetValue = 1.2f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label = "jarvis-sway"
+    )
     val shape = RoundedCornerShape(28.dp)
     Box(
         modifier.fillMaxWidth().height(360.dp).clip(shape)
@@ -56,7 +63,7 @@ fun JarvisPortrait(state: JarvisVisualState, modifier: Modifier = Modifier) {
                     contentDescription = "JARVIS 3.5 native portrait"
                 }
             },
-            modifier = Modifier.fillMaxSize().scale(pulse)
+            modifier = Modifier.fillMaxSize().scale(pulse).graphicsLayer { rotationZ = sway }
         )
     }
 }

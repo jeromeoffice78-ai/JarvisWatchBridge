@@ -21,7 +21,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="JARVIS FIXED 3.5"
+        android:label="JARVIS MOTION 3.6"
         android:theme="@style/Theme.JarvisWatchBridge">
         <activity
             android:name=".MainActivity"

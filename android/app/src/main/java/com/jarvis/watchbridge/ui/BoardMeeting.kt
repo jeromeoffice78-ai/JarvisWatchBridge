@@ -40,6 +40,17 @@ private val boardMembers=listOf(
  }}}
 
 @Composable private fun TalkingPortrait(m:BoardMember,speaking:Boolean,modifier:Modifier=Modifier){val transition=rememberInfiniteTransition(label="portrait");val pulse by transition.animateFloat(1f,if(speaking)1.025f else 1.008f,infiniteRepeatable(tween(if(speaking)380 else 1600),RepeatMode.Reverse),label="speechPulse")
- Box(modifier.clip(RoundedCornerShape(20.dp)).border(2.dp,m.color,RoundedCornerShape(20.dp)).background(Color(0xFF07101B)),contentAlignment=Alignment.Center){Image(painterResource(m.portrait),m.name,Modifier.fillMaxSize().scale(pulse),contentScale=ContentScale.Crop);Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent,Color.Transparent,Color(0xCC07101B)))));Text(if(speaking)"SPEAKING" else "READY",color=m.color,fontWeight=FontWeight.Bold,modifier=Modifier.align(Alignment.BottomCenter).padding(12.dp))}}
+ val sway by transition.animateFloat(-1.5f,1.5f,infiniteRepeatable(tween(if(speaking)650 else 1900),RepeatMode.Reverse),label="headSway")
+ val nod by transition.animateFloat(-4f,4f,infiniteRepeatable(tween(if(speaking)420 else 1500),RepeatMode.Reverse),label="headNod")
+ val mouth by transition.animateFloat(5f,if(speaking)20f else 7f,infiniteRepeatable(tween(if(speaking)150 else 1200),RepeatMode.Reverse),label="mouth")
+ val blink by transition.animateFloat(0f,1f,infiniteRepeatable(keyframes{durationMillis=3200;0f at 0;0f at 2750;1f at 2860;0f at 3000}),label="blink")
+ Box(modifier.clip(RoundedCornerShape(20.dp)).border(2.dp,m.color,RoundedCornerShape(20.dp)).background(Color(0xFF07101B)),contentAlignment=Alignment.Center){
+  Image(painterResource(m.portrait),m.name,Modifier.fillMaxSize().graphicsLayer{scaleX=pulse;scaleY=pulse;rotationZ=sway;translationY=nod},contentScale=ContentScale.Crop)
+  if(blink>.55f){Row(Modifier.align(Alignment.Center).offset(y=(-45).dp),horizontalArrangement=Arrangement.spacedBy(42.dp)){repeat(2){Box(Modifier.width(42.dp).height(4.dp).background(Color(0xDD151018),CircleShape))}}}
+  Box(Modifier.align(Alignment.Center).offset(y=55.dp).width(48.dp).height(mouth.dp).background(Color(0xDD250D16),CircleShape).border(1.dp,m.color.copy(alpha=.7f),CircleShape))
+  if(speaking){Row(Modifier.align(Alignment.BottomCenter).padding(bottom=44.dp),horizontalArrangement=Arrangement.spacedBy(4.dp)){repeat(9){i->val h=(8+(i%4)*5).dp;Box(Modifier.width(3.dp).height(h).background(m.color,CircleShape))}}}
+  Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent,Color.Transparent,Color(0xCC07101B)))))
+  Text(if(speaking)"SPEAKING • LIVE MOTION" else "READY • BLINKING",color=m.color,fontWeight=FontWeight.Bold,modifier=Modifier.align(Alignment.BottomCenter).padding(12.dp))
+ }}
 
 @Composable private fun DirectorCard(m:BoardMember,selected:Boolean,modifier:Modifier=Modifier,onClick:()->Unit){Card(modifier.clickable(onClick=onClick),colors=CardDefaults.cardColors(containerColor=if(selected)m.color.copy(alpha=.2f)else Color(0xFF162234)),shape=RoundedCornerShape(18.dp),border=BorderStroke(if(selected)2.dp else 1.dp,if(selected)m.color else Color(0xFF29405A))){Column(Modifier.fillMaxWidth().padding(10.dp),horizontalAlignment=Alignment.CenterHorizontally){Image(painterResource(m.portrait),m.name,Modifier.size(94.dp).clip(CircleShape).border(3.dp,m.color,CircleShape),contentScale=ContentScale.Crop);Spacer(Modifier.height(7.dp));Text(m.name,color=Color.White,fontWeight=FontWeight.Bold);Text(m.role,color=Color(0xFFA8BDD0),style=MaterialTheme.typography.labelSmall,textAlign=TextAlign.Center)}}}
