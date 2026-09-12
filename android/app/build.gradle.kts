@@ -10,11 +10,11 @@ android {
 
     defaultConfig {
         // Separate Chairman Access package installs alongside every earlier JARVIS build.
-        applicationId = "chairman.access.android.smartwatch.bridge.autonomous3d"
+        applicationId = "chairman.access.android.smartwatch.bridge.rigged3d"
         minSdk = 28
         targetSdk = 36
-        versionCode = 390
-        versionName = "3.9.0"
+        versionCode = 400
+        versionName = "4.0.0"
 
         // Render-only FastAPI backend. No CloudFront/Floot fallback exists in this build.
         buildConfigField(
@@ -55,4 +55,5 @@ dependencies {
     implementation("com.google.guava:guava:33.4.0-android")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
+    implementation("io.github.sceneview:sceneview:4.35.0")
 }

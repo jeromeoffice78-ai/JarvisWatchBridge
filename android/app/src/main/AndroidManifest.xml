@@ -21,7 +21,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="JARVIS AUTONOMOUS 3D"
+        android:label="JARVIS RIGGED 3D"
         android:theme="@style/Theme.JarvisWatchBridge">
         <activity
             android:name=".MainActivity"
