@@ -1,0 +1,60 @@
+name: One-time repository cleanup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-time-repo-cleanup.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Remove obsolete builds, runs, releases, caches, and stale branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+
+          echo "Deleting Actions artifacts..."
+          gh api --paginate "repos/$REPO/actions/artifacts?per_page=100" --jq '.artifacts[].id' |
+          while read -r id; do
+            [ -z "$id" ] || gh api -X DELETE "repos/$REPO/actions/artifacts/$id"
+          done
+
+          echo "Keeping newest GitHub release and deleting older releases/tags..."
+          latest_tag="$(gh api "repos/$REPO/releases?per_page=100" --jq '.[0].tag_name // ""')"
+          if [ -n "$latest_tag" ]; then
+            gh api "repos/$REPO/releases?per_page=100" --jq '.[].tag_name' |
+            while read -r tag; do
+              if [ "$tag" != "$latest_tag" ]; then
+                gh release delete "$tag" --cleanup-tag -y
+              fi
+            done
+          fi
+
+          echo "Keeping the 10 newest workflow runs and deleting older run history..."
+          mapfile -t run_ids < <(gh run list --limit 1000 --json databaseId,createdAt --jq 'sort_by(.createdAt) | reverse | .[].databaseId')
+          index=0
+          for id in "${run_ids[@]}"; do
+            index=$((index + 1))
+            if [ "$id" = "$GITHUB_RUN_ID" ] || [ "$index" -le 10 ]; then
+              continue
+            fi
+            gh api -X DELETE "repos/$REPO/actions/runs/$id" || true
+          done
+
+          echo "Clearing rebuildable Actions caches..."
+          gh cache delete --all --confirm || true
+
+          echo "Deleting branch already fully superseded by main..."
+          gh api -X DELETE "repos/$REPO/git/refs/heads/feature%2Fnew-jarvis-chairman-companion" || true
