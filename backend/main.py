@@ -1,5 +1,6 @@
 import base64
 import binascii
+import hmac
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -57,6 +58,25 @@ def _require_admin(token: str | None) -> None:
     if not expected:
         raise HTTPException(status_code=503, detail="JARVIS_SETUP_TOKEN is not configured")
     if not token or token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _require_phone_bridge(authorization: str | None) -> None:
+    expected = os.getenv("JARVIS_PHONE_BRIDGE_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="JARVIS_PHONE_BRIDGE_TOKEN is not configured",
+        )
+
+    prefix = "Bearer "
+    token = (
+        authorization[len(prefix):].strip()
+        if authorization and authorization.startswith(prefix)
+        else ""
+    )
+
+    if not token or not hmac.compare_digest(token, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -378,6 +398,48 @@ async def vapi_webhook(request: Request) -> dict[str, bool]:
         RECENT_CALL_EVENTS.insert(0, event)
         del RECENT_CALL_EVENTS[50:]
     return {"ok": True}
+
+
+@app.get("/phone/bridge/status")
+async def phone_bridge_status(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _require_phone_bridge(authorization)
+    binding = await _bind_existing_phone()
+    if not binding:
+        return {
+            "active": False,
+            "phoneNumber": JARVIS_PHONE_NUMBER,
+            "assistantName": "JARVIS Phone Receptionist v2",
+        }
+
+    assistant = binding["assistant"]
+    phone = binding["phone"]
+    return {
+        "active": True,
+        "phoneNumber": phone.get("number") or JARVIS_PHONE_NUMBER,
+        "phoneNumberId": phone.get("id"),
+        "assistantId": assistant.get("id"),
+        "assistantName": assistant.get("name"),
+        "webhook": f"{_public_base_url()}/vapi/webhook" if _public_base_url() else None,
+    }
+
+
+@app.get("/phone/bridge/messages")
+async def phone_bridge_messages(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _require_phone_bridge(authorization)
+    calls = await _vapi("GET", "/call")
+    messages = [
+        _message_from_call(call)
+        for call in (calls[:50] if isinstance(calls, list) else [])
+    ]
+    return {
+        "phoneNumber": JARVIS_PHONE_NUMBER,
+        "messages": messages,
+        "recentWebhookEvents": RECENT_CALL_EVENTS[:20],
+    }
 
 
 @app.get("/phone/messages")
