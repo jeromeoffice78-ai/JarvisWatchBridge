@@ -11,6 +11,10 @@ from openai import OpenAI
 
 app = FastAPI(title="JARVIS Watch Bridge API", version="0.6.0")
 VAPI_BASE = "https://api.vapi.ai"
+MAIN_JARVIS_AUTH_CHECK_URL = os.getenv(
+    "MAIN_JARVIS_AUTH_CHECK_URL",
+    "https://jarvis-legal-enterprise-api.onrender.com/v1/auth/check",
+).strip()
 JARVIS_PHONE_NUMBER = "+15318679252"
 JARVIS_ASSISTANT_NAMES = ("JARVIS Phone Receptionist v2", "JARVIS Phone Receptionist")
 RECENT_CALL_EVENTS: list[dict[str, Any]] = []
@@ -57,6 +61,27 @@ def _require_admin(token: str | None) -> None:
     if not expected:
         raise HTTPException(status_code=503, detail="JARVIS_SETUP_TOKEN is not configured")
     if not token or token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+
+async def _require_main_jarvis(authorization: str | None) -> None:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            response = await client.get(
+                MAIN_JARVIS_AUTH_CHECK_URL,
+                headers={"Authorization": authorization},
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Main JARVIS authentication service is unavailable",
+        ) from exc
+
+    if response.status_code != 200:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -386,6 +411,53 @@ async def phone_messages(x_jarvis_admin_token: str | None = Header(default=None)
     calls = await _vapi("GET", "/call")
     messages = [_message_from_call(call) for call in (calls[:25] if isinstance(calls, list) else [])]
     return {"messages": messages}
+
+
+@app.get("/main/phone/status")
+async def main_phone_status(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    await _require_main_jarvis(authorization)
+
+    bound = await _bind_existing_phone()
+    if not bound:
+        return {
+            "active": False,
+            "phoneNumber": JARVIS_PHONE_NUMBER,
+            "assistantName": "JARVIS Phone Receptionist v2",
+            "message": "The existing JARVIS phone number is not currently bound.",
+        }
+
+    assistant = bound["assistant"]
+    phone = bound["phone"]
+
+    return {
+        "active": True,
+        "phoneNumber": phone.get("number") or JARVIS_PHONE_NUMBER,
+        "phoneNumberId": phone.get("id"),
+        "assistantId": assistant.get("id"),
+        "assistantName": assistant.get("name"),
+        "provider": "vapi",
+    }
+
+
+@app.get("/main/phone/messages")
+async def main_phone_messages(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    await _require_main_jarvis(authorization)
+
+    calls = await _vapi("GET", "/call")
+    messages = [
+        _message_from_call(call)
+        for call in (calls[:25] if isinstance(calls, list) else [])
+    ]
+
+    return {
+        "phoneNumber": JARVIS_PHONE_NUMBER,
+        "messages": messages,
+        "recentWebhookEvents": RECENT_CALL_EVENTS[:10],
+    }
 
 
 @app.get("/watch/alerts")
