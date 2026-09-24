@@ -235,12 +235,18 @@ async def startup_checks() -> None:
                 flush=True,
             )
 
-    if not os.getenv("VAPI_API_KEY", "").strip():
+    vapi_key = os.getenv("VAPI_API_KEY", "").strip()
+    print(f"JARVIS_VAPI_CONFIGURED={bool(vapi_key)}", flush=True)
+    if not vapi_key:
         return
     try:
-        await _bind_existing_phone()
+        bound = await _bind_existing_phone()
+        print(f"JARVIS_VAPI_PHONE_BOUND={bool(bound)}", flush=True)
     except Exception as exc:
-        print(f"JARVIS Vapi auto-bind warning: {type(exc).__name__}", flush=True)
+        print(
+            f"JARVIS_VAPI_PHONE_BOUND=False error={type(exc).__name__}",
+            flush=True,
+        )
 
 
 @app.get("/health")
